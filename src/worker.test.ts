@@ -1,8 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { NOM_CSRF, NOM_SESSION } from "./cookies.ts";
+import type { Preparer, RequeteLiee } from "./db.ts";
+import { deriver } from "./mot-de-passe.ts";
 import { CSP, HSTS } from "./entetes.ts";
 import { repondre, type Env } from "./worker.ts";
 
-const HASH = "empreinte-de-test";
+const PHRASE = "une phrase assez longue";
+const AUTRE = "une autre phrase longue";
+const ORIGINE = "https://registre.formation.deter-mi.net";
 
 describe("worker", () => {
   it("répond 503 sans formulaire tant que le hash est vide", async () => {
@@ -24,10 +31,12 @@ describe("worker", () => {
     assertEntetes(reponse);
   });
 
-  it("répond 401 sans formulaire quand le hash est posé", async () => {
-    const reponse = await repondre(demande("GET", "/"), base(HASH));
-    expect(reponse.status).toBe(401);
-    await assertSansFormulaire(reponse, "L'accès n'est pas ouvert.\n");
+  it("sert la feuille de style sans ouvrir la base", async () => {
+    const reponse = await repondre(demande("GET", "/registre.css"), base("erreur"));
+    expect(reponse.status).toBe(200);
+    expect(reponse.headers.get("Content-Type")).toBe("text/css; charset=utf-8");
+    expect(await reponse.text()).toContain("font-family");
+    assertSecurite(reponse);
   });
 
   it("ne lance pas la preuve tant que PREUVE n'est pas 1", async () => {
@@ -45,8 +54,168 @@ describe("worker", () => {
   });
 });
 
-function demande(method: string, pathname: string): Request {
-  return new Request(`https://registre.formation.deter-mi.net${pathname}`, { method });
+describe("accès", () => {
+  beforeAll(async () => {
+    baseSql = new DatabaseSync(":memory:");
+    baseSql.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
+    baseSql.exec(readFileSync(new URL("../migrations/0002_numero_tva.sql", import.meta.url), "utf8"));
+    const empreinte = await deriver(PHRASE);
+    baseSql.prepare(
+      `UPDATE reglages
+          SET nom = 'Atelier Test',
+              mot_de_passe_algo = 'PBKDF2-SHA-256',
+              mot_de_passe_iterations = 100000,
+              mot_de_passe_sel = ?,
+              mot_de_passe_hash = ?,
+              mot_de_passe_defini_le = '2026-11-03T21:05:02.993Z'
+        WHERE id = 1`,
+    ).run(empreinte.sel, empreinte.hash);
+  });
+
+  beforeEach(() => {
+    horloge = new Date("2026-11-03T18:00:00.000Z");
+    baseSql.exec("DELETE FROM sessions");
+    baseSql.exec("DELETE FROM dossiers");
+    baseSql.exec("DELETE FROM tentatives_connexion");
+    baseSql.exec(
+      "UPDATE tentatives_globales SET echecs = 0, bloque_jusqu_au = NULL, modifie_le = '1970-01-01T00:00:00Z'",
+    );
+  });
+
+  afterAll(() => baseSql.close());
+
+  it("affiche le formulaire et un jeton, sans session", async () => {
+    const reponse = await repondre(demande("GET", "/"), env());
+    expect(reponse.status).toBe(200);
+    const html = await reponse.text();
+    expect(html).toContain("<form");
+    expect(html).toContain('action="/connexion"');
+    expect(html).toContain('type="password"');
+    expect(html).not.toContain(PHRASE);
+    expect(html.toLowerCase()).not.toContain("<script");
+    const cookies = reponse.headers.getSetCookie();
+    expect(cookies.some((cookie) => cookie.startsWith(`${NOM_CSRF}=`))).toBe(true);
+    expect(cookies.some((cookie) => cookie.startsWith(`${NOM_SESSION}=`))).toBe(false);
+    for (const cookie of cookies) assertCookie(cookie);
+    assertSecurite(reponse);
+    expect(reponse.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+  });
+
+  it("refuse une phrase trop courte sans compter l'échec", async () => {
+    const avant = echecs();
+    const reponse = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), "court");
+    expect(reponse.status).toBe(401);
+    expect(await reponse.text()).toContain("20 caractères");
+    expect(echecs()).toBe(avant);
+    expect(sessions()).toBe(0);
+  });
+
+  it("ouvre l'accès et montre l'organisme", async () => {
+    const reponse = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
+    expect(reponse.status).toBe(303);
+    expect(reponse.headers.get("Location")).toBe("/");
+    for (const cookie of reponse.headers.getSetCookie()) assertCookie(cookie);
+    const suite = await repondre(demande("GET", "/", cookieEntete(reponse)), env());
+    const html = await suite.text();
+    expect(suite.status).toBe(200);
+    expect(html).toContain("Atelier Test");
+    expect(html).toContain("Aucun dossier.");
+    expect(html).not.toContain(PHRASE);
+    expect(audits()).not.toContain(PHRASE);
+    const longue = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE, "B".repeat(600));
+    expect(agents()).toContain("B".repeat(512));
+    expect(longue.status).toBe(303);
+  });
+
+  it("bloque au cinquième échec, puis accepte après le délai", async () => {
+    let jeton = await jetonPage(await repondre(demande("GET", "/"), env()));
+    for (let essai = 0; essai < 4; essai += 1) {
+      const refus = await envoyer(jeton, AUTRE);
+      expect(refus.status).toBe(401);
+      jeton = await jetonPage(refus);
+    }
+    const blocage = await envoyer(jeton, AUTRE);
+    const pageBlocage = await blocage.text();
+    expect(blocage.status).toBe(429);
+    expect(pageBlocage).toContain("19:15");
+    const pendant = await envoyer(
+      {
+        cookie: blocage.headers.getSetCookie().find((ligne) => ligne.startsWith(`${NOM_CSRF}=`))?.split(";")[0] ?? "",
+        champ: champCsrf(pageBlocage),
+      },
+      PHRASE,
+    );
+    expect(pendant.status).toBe(429);
+    expect(sessions()).toBe(0);
+    horloge = new Date("2026-11-03T18:16:00.000Z");
+    const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
+    expect(ouverte.status).toBe(303);
+    expect(echecs()).toBe(0);
+  });
+
+  it("enregistre un dossier et échappe le nom", async () => {
+    const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
+    const cookies = cookieEntete(ouverte);
+    const page = await repondre(demande("GET", "/", cookies), env());
+    const csrf = champCsrf(await page.text());
+    const creation = await repondre(
+      demande("POST", "/dossiers", cookies, {
+        csrf,
+        stagiaire_nom: "<script>",
+        stagiaire_email: "camille@example.com",
+        financeur: "AGEFICE",
+        intitule: "Administration Linux",
+        date_debut: "2026-05-13",
+        date_fin: "2026-05-15",
+        heures_total: "14",
+        heures_coaching: "0",
+        heures_elearning: "0",
+        prix_ht: "600",
+        tva: "20",
+        modalite: "distanciel",
+      }),
+      env(),
+    );
+    expect(creation.status).toBe(303);
+    const html = await (await repondre(demande("GET", "/", cookies), env())).text();
+    expect(html).toContain("&lt;script&gt;");
+    expect(html.toLowerCase()).not.toContain("<script");
+    expect(html).toContain("13/05/2026");
+    expect(html).toContain("600,00 €");
+    expect(html).toContain("20 %");
+    expect(html).not.toContain("Aucun dossier.");
+  });
+
+  it("ferme l'accès", async () => {
+    const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
+    const cookies = cookieEntete(ouverte);
+    const page = await repondre(demande("GET", "/", cookies), env());
+    const sortie = await repondre(
+      demande("POST", "/sortie", cookies, { csrf: champCsrf(await page.text()) }),
+      env(),
+    );
+    expect(sortie.status).toBe(303);
+    const html = await (await repondre(demande("GET", "/", cookieEntete(ouverte)), env())).text();
+    expect(html).toContain('action="/connexion"');
+    expect(html).not.toContain("Atelier Test");
+  });
+});
+
+function demande(
+  method: string,
+  pathname: string,
+  cookie = "",
+  champs?: Record<string, string>,
+): Request {
+  const headers = new Headers();
+  if (cookie) headers.set("Cookie", cookie);
+  headers.set("CF-Connecting-IP", "203.0.113.8");
+  let body: string | undefined;
+  if (champs) {
+    headers.set("Content-Type", "application/x-www-form-urlencoded");
+    body = new URLSearchParams(champs).toString();
+  }
+  return new Request(`${ORIGINE}${pathname}`, { method, headers, body });
 }
 
 function base(hash: string | null | "erreur"): Env {
@@ -64,12 +233,137 @@ function base(hash: string | null | "erreur"): Env {
                 if (hash === "erreur") throw new Error("d1 indisponible");
                 return { mot_de_passe_hash: hash };
               },
+              async all() {
+                return { results: [] };
+              },
+              async run() {},
             };
           },
         };
       },
+      async batch() {},
     },
   };
+}
+
+function env(): Env {
+  return { DB: adapter(dbCourante()), maintenant: () => instantCourant() };
+}
+
+let baseSql: DatabaseSync;
+let horloge = new Date("2026-11-03T18:00:00.000Z");
+
+function dbCourante(): DatabaseSync {
+  if (!baseSql) throw new Error("base absente");
+  return baseSql;
+}
+
+function instantCourant(): Date {
+  return horloge;
+}
+
+function adapter(db: DatabaseSync): Preparer {
+  return {
+    prepare(requete: string) {
+      return {
+        bind(...valeurs: unknown[]) {
+          const instruction: RequeteLiee = {
+            async first<T>() {
+              const ligne = db.prepare(requete).get(...(valeurs as Sql[]));
+              return (ligne as T | undefined) ?? null;
+            },
+            async all<T>() {
+              return { results: db.prepare(requete).all(...(valeurs as Sql[])) as T[] };
+            },
+            async run() {
+              db.prepare(requete).run(...(valeurs as Sql[]));
+            },
+          };
+          return instruction;
+        },
+      };
+    },
+    async batch(requetes: RequeteLiee[]) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const requete of requetes) await requete.run();
+        db.exec("COMMIT");
+      } catch (erreur) {
+        db.exec("ROLLBACK");
+        throw erreur;
+      }
+    },
+  };
+}
+
+type Sql = string | number | null | bigint | Uint8Array;
+
+async function jetonPage(reponse: Response): Promise<{ cookie: string; champ: string }> {
+  const html = await reponse.text();
+  const champ = champCsrf(html);
+  const cookie =
+    reponse.headers.getSetCookie().find((ligne) => ligne.startsWith(`${NOM_CSRF}=`))?.split(";")[0] ?? "";
+  return { cookie, champ };
+}
+
+function champCsrf(html: string): string {
+  return /name="csrf" value="([^"]+)"/.exec(html)?.[1] ?? "";
+}
+
+async function envoyer(
+  jeton: { cookie: string; champ: string },
+  phrase: string,
+  userAgent = "",
+): Promise<Response> {
+  const headers = new Headers({
+    "Content-Type": "application/x-www-form-urlencoded",
+    Cookie: jeton.cookie,
+    "CF-Connecting-IP": "203.0.113.8",
+  });
+  if (userAgent) headers.set("User-Agent", userAgent);
+  return repondre(
+    new Request(`${ORIGINE}/connexion`, {
+      method: "POST",
+      headers,
+      body: new URLSearchParams({ csrf: jeton.champ, phrase }).toString(),
+    }),
+    env(),
+  );
+}
+
+function cookieEntete(reponse: Response): string {
+  return reponse.headers.getSetCookie()
+    .map((ligne) => ligne.split(";")[0])
+    .join("; ");
+}
+
+function echecs(): number {
+  const ligne = dbCourante().prepare("SELECT echecs FROM tentatives_globales WHERE id = 1").get() as { echecs: number };
+  return ligne.echecs;
+}
+
+function sessions(): number {
+  const ligne = dbCourante().prepare("SELECT count(*) AS n FROM sessions").get() as { n: number };
+  return ligne.n;
+}
+
+function audits(): string {
+  return JSON.stringify(dbCourante().prepare("SELECT action, detail FROM audit").all());
+}
+
+function agents(): string[] {
+  return (
+    dbCourante().prepare("SELECT user_agent FROM sessions").all() as { user_agent: string }[]
+  ).map((ligne) => ligne.user_agent);
+}
+
+function assertCookie(cookie: string): void {
+  expect(cookie).toMatch(/^__Host-/);
+  expect(cookie).toContain("HttpOnly");
+  expect(cookie).toContain("Secure");
+  expect(cookie).toContain("SameSite=Strict");
+  expect(cookie).toContain("Path=/");
+  expect(cookie.toLowerCase()).not.toContain("domain=");
 }
 
 async function assertSansFormulaire(reponse: Response, corps: string): Promise<void> {
@@ -84,6 +378,10 @@ async function assertSansFormulaire(reponse: Response, corps: string): Promise<v
 
 function assertEntetes(reponse: Response): void {
   expect(reponse.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+  assertSecurite(reponse);
+}
+
+function assertSecurite(reponse: Response): void {
   expect(reponse.headers.get("Content-Security-Policy")).toBe(CSP);
   expect(reponse.headers.get("X-Content-Type-Options")).toBe("nosniff");
   expect(reponse.headers.get("Referrer-Policy")).toBe("no-referrer");
