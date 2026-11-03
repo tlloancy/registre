@@ -229,7 +229,34 @@ export async function listerDossiers(db: Preparer): Promise<DossierLigne[]> {
   );
 }
 
-export async function insererDossier(db: Preparer, dossier: DossierPret, ip: string): Promise<void> {
+export type FichierConvention = {
+  sha256: string;
+  taille: number;
+  numero: string;
+  devis: string;
+  recuLe: string;
+  userAgent: string;
+};
+
+export async function lireTailleDepot(db: Preparer): Promise<number> {
+  const ligne = await une<{ depot_taille_max_octets: number }>(
+    db,
+    "SELECT depot_taille_max_octets FROM reglages WHERE id = ?",
+    1,
+  );
+  if (!ligne || ligne.depot_taille_max_octets <= 0) throw new Error("dépôt absent");
+  return ligne.depot_taille_max_octets;
+}
+
+export async function insererDossier(
+  db: Preparer,
+  dossier: DossierPret,
+  ip: string,
+  fichier: FichierConvention,
+): Promise<void> {
+  const detail: Record<string, string> = {};
+  if (fichier.numero) detail.numero = fichier.numero;
+  if (fichier.devis) detail.devis = fichier.devis;
   await db.batch([
     db
       .prepare(
@@ -262,6 +289,32 @@ export async function insererDossier(db: Preparer, dossier: DossierPret, ip: str
         dossier.prix_ht_centimes,
         dossier.tva_taux_bp,
         dossier.modalite,
+      ),
+    db
+      .prepare(
+        `INSERT INTO pieces (
+           id, dossier_id, code, seance_id, libelle, indicateur, echeance,
+           echeance_verifiee_le, echeance_origine, statut, derniere_version
+         ) VALUES (?, ?, 'convention', '', 'Convention', NULL, NULL, NULL, 'registre', 'prete', 1)`,
+      )
+      .bind(crypto.randomUUID(), dossier.id),
+    db
+      .prepare(
+        `INSERT INTO retours (
+           id, dossier_id, type, seance_id, version, recu_le, ip, user_agent,
+           corps, mime, taille_octets, sha256, r2_cle
+         ) VALUES (?, ?, 'convention', '', 1, ?, ?, ?, ?, 'application/pdf', ?, ?, ?)`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        dossier.id,
+        fichier.recuLe,
+        ip,
+        fichier.userAgent,
+        JSON.stringify(detail),
+        fichier.taille,
+        fichier.sha256,
+        `scans/${fichier.sha256}`,
       ),
     db
       .prepare(

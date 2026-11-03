@@ -61,12 +61,19 @@ ${paragrapheErreur(erreur)}
 </form>`);
 }
 
+export type Reprise = {
+  sha256: string;
+  numero: string;
+  devis: string;
+};
+
 export function pageAccueil(
   fiche: Fiche,
   dossiers: readonly DossierVue[],
   csrf: string,
   erreur: string | null,
   saisie: SaisieDossier,
+  reprise: Reprise | null = null,
 ): string {
   return document(`
 <div class="barre">
@@ -91,8 +98,27 @@ ${ligne("N° TVA", fiche.numero_tva)}
 ${tableau(dossiers)}
 <h2>Ouvrir un dossier</h2>
 ${paragrapheErreur(erreur)}
-<form class="bloc" method="post" action="/dossiers">
+${reprise ? identiteConvention(reprise) : ""}
+${reprise ? formulaireComplet(csrf, saisie, reprise) : formulaireDepot(csrf)}
+`);
+}
+
+function formulaireDepot(csrf: string): string {
+  return `<form class="bloc" method="post" action="/dossiers" enctype="multipart/form-data">
 <input type="hidden" name="csrf" value="${echapper(csrf)}">
+<label for="convention">Convention
+<input id="convention" name="convention" type="file" accept="application/pdf" required>
+</label>
+<button type="submit">Ouvrir le dossier</button>
+</form>`;
+}
+
+function formulaireComplet(csrf: string, saisie: SaisieDossier, reprise: Reprise): string {
+  return `<form class="bloc" method="post" action="/dossiers">
+<input type="hidden" name="csrf" value="${echapper(csrf)}">
+<input type="hidden" name="sha256" value="${echapper(reprise.sha256)}">
+<input type="hidden" name="numero" value="${echapper(reprise.numero)}">
+<input type="hidden" name="devis" value="${echapper(reprise.devis)}">
 ${champ("stagiaire_nom", "Nom du stagiaire", saisie.stagiaire_nom, "text")}
 ${champ("stagiaire_email", "E-mail", saisie.stagiaire_email, "email")}
 ${champ("stagiaire_tel", "Téléphone", saisie.stagiaire_tel, "tel")}
@@ -124,7 +150,16 @@ ${champ("prix_ht", "Prix HT, en euros", saisie.prix_ht, "text")}
 ${champ("tva", "TVA, en pourcentage", saisie.tva, "text")}
 </div>
 <button type="submit">Enregistrer le dossier</button>
-</form>`);
+</form>`;
+}
+
+function identiteConvention(reprise: Reprise): string {
+  const lignes = [
+    reprise.numero ? `Convention ${reprise.numero}` : "",
+    reprise.devis ? `Devis ${reprise.devis}` : "",
+  ].filter(Boolean);
+  if (lignes.length === 0) return "";
+  return lignes.map((ligne) => `<p>${echapper(ligne)}</p>`).join("");
 }
 
 function tableau(dossiers: readonly DossierVue[]): string {

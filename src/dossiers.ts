@@ -71,34 +71,26 @@ export function analyserDossier(
   creeLe: string,
 ): { ok: true; dossier: DossierPret; saisie: SaisieDossier } | { ok: false; raison: string; saisie: SaisieDossier } {
   const saisie = lireSaisie(formulaire);
-  const tropLong = Object.values(saisie).some((valeur) => [...valeur].length > 500);
-  if (tropLong) return { ok: false, raison: "Un champ est trop long.", saisie };
-
-  if (saisie.stagiaire_nom === "") return { ok: false, raison: "Le nom du stagiaire est vide.", saisie };
-  if (!emailValide(saisie.stagiaire_email)) {
-    return { ok: false, raison: "L'e-mail du stagiaire est invalide.", saisie };
-  }
-  if (saisie.financeur === "") return { ok: false, raison: "Le financeur est vide.", saisie };
-  if (saisie.intitule === "") return { ok: false, raison: "L'intitulé est vide.", saisie };
-
+  const raisons = raisonsSaisie(saisie);
+  if (raisons.length > 0) return { ok: false, raison: raisons[0] ?? "Le dossier est incomplet.", saisie };
   const debut = jour(saisie.date_debut);
-  if (!debut) return { ok: false, raison: "La date de début est invalide.", saisie };
   const fin = jour(saisie.date_fin);
-  if (!fin) return { ok: false, raison: "La date de fin est invalide.", saisie };
-  if (fin < debut) return { ok: false, raison: "La date de fin précède le début.", saisie };
-
   const heuresTotal = entier(saisie.heures_total);
   const heuresCoaching = entier(saisie.heures_coaching);
   const heuresElearning = entier(saisie.heures_elearning);
-  if (heuresTotal === null || heuresCoaching === null || heuresElearning === null) {
-    return { ok: false, raison: "Les heures sont invalides.", saisie };
-  }
-
   const prix = eurosEnCentimes(saisie.prix_ht);
-  if (prix === null) return { ok: false, raison: "Le prix HT est invalide.", saisie };
   const tva = pourcentEnBp(saisie.tva);
-  if (tva === null) return { ok: false, raison: "Le taux de TVA est invalide.", saisie };
-  if (saisie.modalite === "") return { ok: false, raison: "La modalité est vide.", saisie };
+  if (
+    !debut ||
+    !fin ||
+    heuresTotal === null ||
+    heuresCoaching === null ||
+    heuresElearning === null ||
+    prix === null ||
+    tva === null
+  ) {
+    return { ok: false, raison: "Le dossier est incomplet.", saisie };
+  }
 
   return {
     ok: true,
@@ -126,6 +118,27 @@ export function analyserDossier(
       modalite: saisie.modalite,
     },
   };
+}
+
+export function raisonsSaisie(saisie: SaisieDossier): string[] {
+  if (Object.values(saisie).some((valeur) => [...valeur].length > 500)) return ["Un champ est trop long."];
+  const raisons: string[] = [];
+  if (saisie.stagiaire_nom === "") raisons.push("Le nom du stagiaire est vide.");
+  if (!emailValide(saisie.stagiaire_email)) raisons.push("L'e-mail du stagiaire est invalide.");
+  if (saisie.financeur === "") raisons.push("Le financeur est vide.");
+  if (saisie.intitule === "") raisons.push("L'intitulé est vide.");
+  const debut = jour(saisie.date_debut);
+  const fin = jour(saisie.date_fin);
+  if (!debut) raisons.push("La date de début est invalide.");
+  if (!fin) raisons.push("La date de fin est invalide.");
+  if (debut && fin && fin < debut) raisons.push("La date de fin précède le début.");
+  if (entier(saisie.heures_total) === null || entier(saisie.heures_coaching) === null || entier(saisie.heures_elearning) === null) {
+    raisons.push("Les heures sont invalides.");
+  }
+  if (eurosEnCentimes(saisie.prix_ht) === null) raisons.push("Le prix HT est invalide.");
+  if (pourcentEnBp(saisie.tva) === null) raisons.push("Le taux de TVA est invalide.");
+  if (saisie.modalite === "") raisons.push("La modalité est vide.");
+  return raisons;
 }
 
 function lireSaisie(formulaire: FormData): SaisieDossier {

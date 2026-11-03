@@ -56,33 +56,18 @@ describe("worker", () => {
 
 describe("accès", () => {
   beforeAll(async () => {
-    baseSql = new DatabaseSync(":memory:");
-    baseSql.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
-    baseSql.exec(readFileSync(new URL("../migrations/0002_numero_tva.sql", import.meta.url), "utf8"));
     const empreinte = await deriver(PHRASE);
-    baseSql.prepare(
-      `UPDATE reglages
-          SET nom = 'Atelier Test',
-              mot_de_passe_algo = 'PBKDF2-SHA-256',
-              mot_de_passe_iterations = 100000,
-              mot_de_passe_sel = ?,
-              mot_de_passe_hash = ?,
-              mot_de_passe_defini_le = '2026-11-03T21:05:02.993Z'
-        WHERE id = 1`,
-    ).run(empreinte.sel, empreinte.hash);
+    selMotDePasse = empreinte.sel;
+    hashMotDePasse = empreinte.hash;
   });
 
   beforeEach(() => {
     horloge = new Date("2026-11-03T18:00:00.000Z");
-    baseSql.exec("DELETE FROM sessions");
-    baseSql.exec("DELETE FROM dossiers");
-    baseSql.exec("DELETE FROM tentatives_connexion");
-    baseSql.exec(
-      "UPDATE tentatives_globales SET echecs = 0, bloque_jusqu_au = NULL, modifie_le = '1970-01-01T00:00:00Z'",
-    );
+    fichiers = new MemoireFichiers();
+    ouvrirBase();
   });
 
-  afterAll(() => baseSql.close());
+  afterAll(() => baseSql?.close());
 
   it("affiche le formulaire et un jeton, sans session", async () => {
     const reponse = await repondre(demande("GET", "/"), env());
@@ -120,6 +105,8 @@ describe("accès", () => {
     expect(suite.status).toBe(200);
     expect(html).toContain("Atelier Test");
     expect(html).toContain("Aucun dossier.");
+    expect(html).toContain('type="file"');
+    expect(html).toContain("Ouvrir le dossier");
     expect(html).not.toContain(PHRASE);
     expect(audits()).not.toContain(PHRASE);
     const longue = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE, "B".repeat(600));
@@ -153,28 +140,106 @@ describe("accès", () => {
     expect(echecs()).toBe(0);
   });
 
-  it("enregistre un dossier et échappe le nom", async () => {
+  it("refuse un dossier sans convention", async () => {
     const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
     const cookies = cookieEntete(ouverte);
-    const page = await repondre(demande("GET", "/", cookies), env());
-    const csrf = champCsrf(await page.text());
+    const csrf = champCsrf(await (await repondre(demande("GET", "/", cookies), env())).text());
+    const creation = await repondre(demande("POST", "/dossiers", cookies, { csrf, stagiaire_nom: "Camille" }), env());
+    expect(creation.status).toBe(400);
+    expect(await creation.text()).toContain("La convention manque.");
+    expect(nombreDossiers()).toBe(0);
+  });
+
+  it("ouvre le dossier depuis la convention et demande ce qui manque", async () => {
+    const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
+    const cookies = cookieEntete(ouverte);
+    const csrf = champCsrf(await (await repondre(demande("GET", "/", cookies), env())).text());
+    const pdf = pdfTexte(`CONVENTION DE FORMATION PROFESSIONNELLE
+N° de convention : 2026-TEST-001
+2. Le beneficiaire / Entreprise
+Raison sociale : Atelier Nord
+Representee par : Camille MARTIN
+Adresse : 1 rue des Lilas, 75011 Paris
+SIRET : 123 456 789 00011
+Article 2 : Intitule de la formation
+Administration Linux
+Article 3 : Objectifs
+Article 4 : Duree et modalites
+Duree totale : 14 heures
+- 14 heures de coaching individuel (visioconference ou presentiel)
+Date de debut : 13 mai 2026
+Article 5 : Prix et reglement
+Montant total : 600 EUR HT soit 720 EUR TTC
+conforme au devis n° D2600001.`);
+    const depot = await deposerPdf(cookies, csrf, pdf);
+    const page = await depot.text();
+    expect(depot.status).toBe(400);
+    expect(page).toContain("Camille MARTIN");
+    expect(page).toContain("La date de fin est invalide.");
+    expect(page).toContain("e-mail du stagiaire est invalide.");
+    expect(page).toContain("Le financeur est vide.");
+    expect(page).toContain("Convention 2026-TEST-001");
+    expect(nombreDossiers()).toBe(0);
+    expect(fichiers.objets.size).toBe(1);
+    expect([...fichiers.objets.values()][0]?.[0]).toBe(0x25);
+    const sha = [...fichiers.objets.keys()][0]?.slice("scans/".length) ?? "";
     const creation = await repondre(
       demande("POST", "/dossiers", cookies, {
         csrf,
-        stagiaire_nom: "<script>",
+        sha256: sha,
+        numero: "2026-TEST-001",
+        devis: "D2600001",
+        stagiaire_nom: "Camille MARTIN",
         stagiaire_email: "camille@example.com",
+        entreprise: "Atelier Nord",
+        entreprise_siret: "12345678900011",
+        entreprise_adresse: "1 rue des Lilas, 75011 Paris",
+        representant: "Camille MARTIN",
         financeur: "AGEFICE",
         intitule: "Administration Linux",
         date_debut: "2026-05-13",
         date_fin: "2026-05-15",
         heures_total: "14",
-        heures_coaching: "0",
+        heures_coaching: "14",
         heures_elearning: "0",
         prix_ht: "600",
         tva: "20",
-        modalite: "distanciel",
+        modalite: "14 heures de coaching individuel (visioconference ou presentiel)",
       }),
       env(),
+    );
+    expect(creation.status).toBe(303);
+    const ligne = dbCourante().prepare("SELECT sha256, r2_cle, corps FROM retours").get() as {
+      sha256: string;
+      r2_cle: string;
+      corps: string;
+    };
+    expect(ligne.r2_cle).toBe(`scans/${ligne.sha256}`);
+    expect(ligne.corps).toContain("2026-TEST-001");
+    expect(fichiers.objets.has(ligne.r2_cle)).toBe(true);
+  });
+
+  it("enregistre un dossier lu en entier et échappe le nom", async () => {
+    const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
+    const cookies = cookieEntete(ouverte);
+    const csrf = champCsrf(await (await repondre(demande("GET", "/", cookies), env())).text());
+    const creation = await deposerPdf(
+      cookies,
+      csrf,
+      pdfTexte(`2. Le beneficiaire / Entreprise
+Representee par : A<script>
+Mail : camille@example.com
+Article 2 : Intitule de la formation
+Administration Linux
+Article 3 : Suite
+Article 4 : Duree et modalites
+Duree totale : 14 heures
+- 14 heures de coaching individuel (visioconference ou presentiel)
+Date de debut : 13 mai 2026
+Date de fin : 15 mai 2026
+Article 5 : Prix et reglement
+Montant total : 600 EUR HT soit 720 EUR TTC
+Financeur : AGEFICE`),
     );
     expect(creation.status).toBe(303);
     const html = await (await repondre(demande("GET", "/", cookies), env())).text();
@@ -247,15 +312,94 @@ function base(hash: string | null | "erreur"): Env {
 }
 
 function env(): Env {
-  return { DB: adapter(dbCourante()), maintenant: () => instantCourant() };
+  return { DB: adapter(dbCourante()), FICHIERS: fichiers, maintenant: () => instantCourant() };
 }
 
-let baseSql: DatabaseSync;
+let baseSql: DatabaseSync | undefined;
 let horloge = new Date("2026-11-03T18:00:00.000Z");
+let selMotDePasse = "";
+let hashMotDePasse = "";
+let fichiers: MemoireFichiers;
+
+function ouvrirBase(): void {
+  baseSql?.close();
+  baseSql = new DatabaseSync(":memory:");
+  baseSql.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
+  baseSql.exec(readFileSync(new URL("../migrations/0002_numero_tva.sql", import.meta.url), "utf8"));
+  baseSql
+    .prepare(
+      `UPDATE reglages
+          SET nom = 'Atelier Test',
+              mot_de_passe_algo = 'PBKDF2-SHA-256',
+              mot_de_passe_iterations = 100000,
+              mot_de_passe_sel = ?,
+              mot_de_passe_hash = ?,
+              mot_de_passe_defini_le = '2026-11-03T21:05:02.993Z'
+        WHERE id = 1`,
+    )
+    .run(selMotDePasse, hashMotDePasse);
+}
+
+class MemoireFichiers {
+  objets = new Map<string, Uint8Array>();
+
+  async head(cle: string): Promise<{ size: number } | null> {
+    const octets = this.objets.get(cle);
+    return octets ? { size: octets.byteLength } : null;
+  }
+
+  async put(cle: string, valeur: Uint8Array): Promise<void> {
+    this.objets.set(cle, valeur);
+  }
+}
 
 function dbCourante(): DatabaseSync {
   if (!baseSql) throw new Error("base absente");
   return baseSql;
+}
+
+function nombreDossiers(): number {
+  const ligne = dbCourante().prepare("SELECT count(*) AS n FROM dossiers").get() as { n: number };
+  return ligne.n;
+}
+
+async function deposerPdf(cookies: string, csrf: string, pdf: Uint8Array): Promise<Response> {
+  const formulaire = new FormData();
+  formulaire.set("csrf", csrf);
+  formulaire.set("convention", new File([pdf], "convention.pdf", { type: "application/pdf" }));
+  return repondre(
+    new Request(`${ORIGINE}/dossiers`, {
+      method: "POST",
+      headers: { Cookie: cookies, "CF-Connecting-IP": "203.0.113.8" },
+      body: formulaire,
+    }),
+    env(),
+  );
+}
+
+function pdfTexte(texte: string): Uint8Array {
+  const lignes = texte.split("\n").map((ligne) => `(${ligne.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)")}) '`);
+  const flux = `BT /F1 11 Tf 40 800 Td 14 TL\n${lignes.join("\n")}\nET`;
+  const objets = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    `<< /Length ${new TextEncoder().encode(flux).length} >>\nstream\n${flux}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, objet] of objets.entries()) {
+    offsets.push(new TextEncoder().encode(pdf).length);
+    pdf += `${index + 1} 0 obj\n${objet}\nendobj\n`;
+  }
+  const xref = new TextEncoder().encode(pdf).length;
+  pdf += `xref\n0 ${objets.length + 1}\n0000000000 65535 f \n`;
+  for (let index = 1; index <= objets.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer << /Size ${objets.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return new TextEncoder().encode(pdf);
 }
 
 function instantCourant(): Date {
