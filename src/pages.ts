@@ -1,4 +1,5 @@
 import type { SaisieDossier } from "./dossiers.ts";
+import { afficherEuros, afficherJour, afficherTaux, numeroDevis, tvaCentimes } from "./montants.ts";
 
 export type Fiche = {
   nom: string;
@@ -13,6 +14,7 @@ export type Fiche = {
 };
 
 export type DossierVue = {
+  id: string;
   stagiaire_nom: string;
   intitule: string;
   financeur: string;
@@ -30,6 +32,8 @@ h1 { font-size: 1.6rem; font-weight: 650; margin: 0; }
 h2 { font-size: 1.15rem; margin: 1.6rem 0 0.6rem; }
 p { line-height: 1.4; }
 a { color: inherit; }
+ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+li { margin: 0.35rem 0; }
 .barre { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .barre form { margin: 0; }
 .fiche, form.bloc { background: #fff; border: 1px solid #d9d6d0; padding: 1rem 1.1rem 1.2rem; }
@@ -162,17 +166,75 @@ function identiteConvention(reprise: Reprise): string {
   return lignes.map((ligne) => `<p>${echapper(ligne)}</p>`).join("");
 }
 
+export type PiecesVues = {
+  convention: boolean;
+  programme: boolean;
+  devis: { annee: number; numero: number } | null;
+  numeroConvention: string;
+};
+
+export function pageDossier(
+  dossier: DossierVue & {
+    entreprise: string;
+    entreprise_siret: string;
+    entreprise_adresse: string;
+    heures_total: number;
+    modalite: string;
+  },
+  pieces: PiecesVues,
+  csrf: string,
+): string {
+  const ttc = dossier.prix_ht_centimes + tvaCentimes(dossier.prix_ht_centimes, dossier.tva_taux_bp);
+  return document(`
+<div class="barre">
+<h1>${echapper(dossier.stagiaire_nom)}</h1>
+<form method="post" action="/sortie">
+<input type="hidden" name="csrf" value="${echapper(csrf)}">
+<button class="secondaire" type="submit">Fermer l'accès</button>
+</form>
+</div>
+<p><a href="/">Tous les dossiers</a></p>
+<p>${echapper(dossier.intitule)}</p>
+${pieces.numeroConvention ? `<p>Convention ${echapper(pieces.numeroConvention)}</p>` : ""}
+<h2>Pièces</h2>
+<ul>
+${elementPiece(dossier.id, "convention", "Convention", pieces.convention)}
+${elementPiece(dossier.id, "programme", "Programme", pieces.programme)}
+${elementPiece(dossier.id, "devis", pieces.devis ? `Devis ${numeroDevis(pieces.devis.annee, pieces.devis.numero)}` : "Devis", pieces.devis !== null)}
+</ul>
+<section class="fiche">
+<dl>
+${ligne("Entreprise", dossier.entreprise)}
+${ligne("SIRET", dossier.entreprise_siret)}
+${ligne("Adresse", dossier.entreprise_adresse)}
+${ligne("Financeur", dossier.financeur)}
+${ligne("Dates", periode(dossier.date_debut, dossier.date_fin))}
+${ligne("Heures", String(dossier.heures_total))}
+${ligne("Modalité", dossier.modalite)}
+${ligne("Prix HT", afficherEuros(dossier.prix_ht_centimes))}
+${ligne("TVA", afficherTaux(dossier.tva_taux_bp))}
+${ligne("Prix TTC", afficherEuros(ttc))}
+${ligne("Statut", statut(dossier.statut))}
+</dl>
+</section>`);
+}
+
+function elementPiece(id: string, code: string, libelle: string, present: boolean): string {
+  if (!present) return "";
+  return `<li>${echapper(libelle)} <a href="/dossiers/${echapper(id)}/${code}">Télécharger</a></li>`;
+}
+
 function tableau(dossiers: readonly DossierVue[]): string {
   if (dossiers.length === 0) return "<p>Aucun dossier.</p>";
   const lignes = dossiers
     .map(
       (dossier) => `<tr>
-<td>${echapper(dossier.stagiaire_nom)}</td>
+<td><a href="/dossiers/${echapper(dossier.id)}">${echapper(dossier.stagiaire_nom)}</a></td>
 <td>${echapper(dossier.intitule)}</td>
 <td>${echapper(dossier.financeur)}</td>
 <td>${echapper(periode(dossier.date_debut, dossier.date_fin))}</td>
-<td>${echapper(euros(dossier.prix_ht_centimes))}</td>
-<td>${echapper(taux(dossier.tva_taux_bp))}</td>
+<td>${echapper(afficherEuros(dossier.prix_ht_centimes))}</td>
+<td>${echapper(afficherTaux(dossier.tva_taux_bp))}</td>
 <td>${echapper(statut(dossier.statut))}</td>
 </tr>`,
     )
@@ -191,6 +253,7 @@ function champ(nom: string, libelle: string, valeur: string, type: string): stri
 }
 
 function ligne(libelle: string, valeur: string): string {
+  if (!valeur.trim()) return "";
   return `<dt>${echapper(libelle)}</dt><dd>${echapper(valeur)}</dd>`;
 }
 
@@ -229,28 +292,6 @@ function echapper(valeur: string): string {
 function periode(debut: string, fin: string | null): string {
   if (!fin) return afficherJour(debut);
   return `${afficherJour(debut)} – ${afficherJour(fin)}`;
-}
-
-function afficherJour(iso: string): string {
-  const parties = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!parties) return iso;
-  return `${parties[3]}/${parties[2]}/${parties[1]}`;
-}
-
-function euros(centimes: number): string {
-  const absolu = Math.abs(centimes);
-  const entier = Math.trunc(absolu / 100);
-  const decimale = String(absolu % 100).padStart(2, "0");
-  const signe = centimes < 0 ? "-" : "";
-  return `${signe}${entier.toLocaleString("fr-FR")},${decimale} €`;
-}
-
-function taux(bp: number): string {
-  const entier = Math.trunc(bp / 100);
-  const decimale = bp % 100;
-  if (decimale === 0) return `${entier} %`;
-  const texte = String(decimale).padStart(2, "0").replace(/0$/, "");
-  return `${entier},${texte} %`;
 }
 
 function statut(valeur: string): string {

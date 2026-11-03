@@ -15,6 +15,9 @@ import {
   insererDossier,
   lireCompteurGlobal,
   lireCompteurIp,
+  clePiece,
+  lireDossier,
+  lireEtatPieces,
   lireHashMotDePasse,
   lireOrganisme,
   lireSecret,
@@ -32,19 +35,14 @@ import { lireConvention, pdfReconnu } from "./convention.ts";
 import { analyserDossier, saisieVide, type SaisieDossier } from "./dossiers.ts";
 import { textePdf } from "./pdf.ts";
 import type { Reprise } from "./pages.ts";
-import { entetes, reponse, reponseHtml, redirection } from "./entetes.ts";
+import { entetes, reponse, reponseHtml, reponseOctets, redirection } from "./entetes.ts";
 import { phraseCorrespond, validerPhrase } from "./mot-de-passe.ts";
-import { FEUILLE, pageAccueil, pageConnexion } from "./pages.ts";
+import { numeroDevis } from "./montants.ts";
+import { FEUILLE, pageAccueil, pageConnexion, pageDossier } from "./pages.ts";
+import { numeroConvention, produirePieces, type Stockage } from "./produire.ts";
 import { prouverPbkdf2 } from "./preuve.ts";
 
-export type Fichiers = {
-  head(cle: string): Promise<unknown | null>;
-  put(
-    cle: string,
-    valeur: Uint8Array,
-    options?: { httpMetadata?: { contentType?: string } },
-  ): Promise<unknown>;
-};
+export type Fichiers = Stockage;
 
 export type Env = {
   DB: Preparer;
@@ -89,7 +87,77 @@ async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response
   if (requete.method === "POST" && url.pathname === "/connexion") return connecter(requete, env);
   if (requete.method === "POST" && url.pathname === "/sortie") return sortir(requete, env);
   if (requete.method === "POST" && url.pathname === "/dossiers") return creerDossier(requete, env);
+  if (requete.method === "GET") {
+    const chemin = cheminDossier(url.pathname);
+    if (chemin) return chemin.piece ? telecharger(requete, env, chemin.id, chemin.piece) : voirDossier(requete, env, chemin.id);
+  }
   return reponse(404, "Cette page n'existe pas.\n");
+}
+
+function cheminDossier(pathname: string): { id: string; piece: "convention" | "programme" | "devis" | null } | null {
+  const trouve = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(convention|programme|devis))?$/.exec(
+    pathname,
+  );
+  if (!trouve?.[1]) return null;
+  const piece = trouve[2];
+  if (piece === "convention" || piece === "programme" || piece === "devis") return { id: trouve[1], piece };
+  return { id: trouve[1], piece: null };
+}
+
+async function voirDossier(requete: Request, env: Env, id: string): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, session === undefined ? 401 : 200, session === undefined);
+  const organisme = await lireOrganisme(env.DB);
+  await produirePieces(env.DB, env.FICHIERS, id, organisme, adresseIp(requete), agent(requete), iso(heure(env)));
+  const dossier = await lireDossier(env.DB, id);
+  if (!dossier) return reponse(404, "Ce dossier n'existe pas.\n");
+  const etat = await lireEtatPieces(env.DB, id);
+  return reponseHtml(
+    200,
+    pageDossier(dossier, {
+      convention: etat.convention !== null,
+      programme: etat.programme,
+      devis: etat.devis,
+      numeroConvention: etat.convention ? numeroConvention(etat.convention.corps) : "",
+    }, session.csrf),
+  );
+}
+
+async function telecharger(
+  requete: Request,
+  env: Env,
+  id: string,
+  piece: "convention" | "programme" | "devis",
+): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, session === undefined ? 401 : 200, session === undefined);
+  if (!env.FICHIERS) return reponse(503, "Le stockage ne répond pas.\n");
+  const cible = await cleTelechargement(env, id, piece);
+  if (!cible) return reponse(404, "Cette pièce n'est pas là.\n");
+  try {
+    const objet = await env.FICHIERS.get(cible.cle);
+    if (!objet) return reponse(404, "Cette pièce n'est pas là.\n");
+    return reponseOctets(new Uint8Array(await objet.arrayBuffer()), "application/pdf", cible.nom);
+  } catch {
+    return reponse(503, "Le stockage ne répond pas.\n");
+  }
+}
+
+async function cleTelechargement(
+  env: Env,
+  id: string,
+  piece: "convention" | "programme" | "devis",
+): Promise<{ cle: string; nom: string } | null> {
+  if (piece === "devis") {
+    const etat = await lireEtatPieces(env.DB, id);
+    if (!etat.devis?.r2_cle) return null;
+    return { cle: etat.devis.r2_cle, nom: `devis-${numeroDevis(etat.devis.annee, etat.devis.numero)}.pdf` };
+  }
+  const cle = await clePiece(env.DB, id, piece);
+  if (!cle) return null;
+  return { cle, nom: piece === "programme" ? "programme.pdf" : "convention.pdf" };
 }
 
 async function accueilOuConnexion(requete: Request, env: Env): Promise<Response> {

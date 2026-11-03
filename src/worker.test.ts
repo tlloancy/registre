@@ -196,6 +196,61 @@ conforme au devis n° D2600001.`),
     expect([...fichiers.objets.values()][0]?.[0]).toBe(0x25);
   });
 
+  it("produit le programme et le devis cités par la convention", async () => {
+    const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
+    const cookies = cookieEntete(ouverte);
+    const csrf = champCsrf(await (await repondre(demande("GET", "/", cookies), env())).text());
+    const depot = await deposerPdf(
+      cookies,
+      csrf,
+      pdfTexte(`2. Le beneficiaire / Entreprise
+Raison sociale : Atelier Nord
+Representee par : Camille MARTIN
+Adresse : 1 rue des Lilas, 75011 Paris
+SIRET : 12345678900011
+Article 2 : Intitule de la formation
+Administration Linux
+Article 3 : Suite
+Article 4 : Duree et modalites
+Duree totale : 14 heures
+- 14 heures de coaching individuel (visioconference ou presentiel)
+Date de debut : 13 mai 2026
+Article 5 : Prix et reglement
+Montant total : 600 EUR HT soit 720 EUR TTC
+conforme au devis n° D2600007 du 01 fevrier 2026.
+PROGRAMME DE FORMATION
+Module 1 Fondamentaux`),
+    );
+    expect(depot.status).toBe(303);
+    const accueil = await (await repondre(demande("GET", "/", cookies), env())).text();
+    const id = /href="\/dossiers\/([^"]+)"/.exec(accueil)?.[1] ?? "";
+    const page = await repondre(demande("GET", `/dossiers/${id}`, cookies), env());
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain("Programme");
+    expect(html).toContain("Devis D2600007");
+    expect(html).toContain("720,00 €");
+    expect(html).toContain("Télécharger");
+    const devis = await repondre(demande("GET", `/dossiers/${id}/devis`, cookies), env());
+    expect(devis.status).toBe(200);
+    expect(devis.headers.get("Content-Type")).toBe("application/pdf");
+    const octets = new Uint8Array(await devis.arrayBuffer());
+    expect(octets[0]).toBe(0x25);
+    expect(new TextDecoder().decode(octets)).toContain("D2600007");
+    const ligne = dbCourante().prepare("SELECT annee, numero, montant_ttc_centimes, r2_cle FROM devis").get() as {
+      annee: number;
+      numero: number;
+      montant_ttc_centimes: number;
+      r2_cle: string;
+    };
+    expect(ligne.annee).toBe(2026);
+    expect(ligne.numero).toBe(7);
+    expect(ligne.montant_ttc_centimes).toBe(72000);
+    expect(ligne.r2_cle.startsWith("devis/")).toBe(true);
+    const programme = dbCourante().prepare("SELECT r2_cle FROM retours WHERE type = 'programme'").get() as { r2_cle: string };
+    expect(programme.r2_cle.startsWith("scans/")).toBe(true);
+  });
+
   it("enregistre un dossier lu en entier et échappe le nom", async () => {
     const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
     const cookies = cookieEntete(ouverte);
@@ -324,6 +379,13 @@ class MemoireFichiers {
   async head(cle: string): Promise<{ size: number } | null> {
     const octets = this.objets.get(cle);
     return octets ? { size: octets.byteLength } : null;
+  }
+
+  async get(cle: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null> {
+    const octets = this.objets.get(cle);
+    if (!octets) return null;
+    const copie = octets.slice();
+    return { async arrayBuffer() { return copie.buffer; } };
   }
 
   async put(cle: string, valeur: Uint8Array): Promise<void> {

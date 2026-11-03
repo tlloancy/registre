@@ -44,6 +44,7 @@ export type SessionLigne = {
 };
 
 export type DossierLigne = {
+  id: string;
   stagiaire_nom: string;
   intitule: string;
   financeur: string;
@@ -52,6 +53,24 @@ export type DossierLigne = {
   statut: string;
   prix_ht_centimes: number;
   tva_taux_bp: number;
+};
+
+export type DossierComplet = DossierLigne & {
+  stagiaire_email: string;
+  entreprise: string;
+  entreprise_siret: string;
+  entreprise_adresse: string;
+  representant: string;
+  heures_total: number;
+  heures_coaching: number;
+  heures_elearning: number;
+  modalite: string;
+};
+
+export type EtatPieces = {
+  convention: { r2_cle: string; corps: string } | null;
+  programme: boolean;
+  devis: { annee: number; numero: number; r2_cle: string } | null;
 };
 
 export async function lireHashMotDePasse(db: Preparer): Promise<string | null> {
@@ -222,7 +241,7 @@ export async function supprimerSession(db: Preparer, tokenHash: string, ip: stri
 export async function listerDossiers(db: Preparer): Promise<DossierLigne[]> {
   return plusieurs<DossierLigne>(
     db,
-    `SELECT stagiaire_nom, intitule, financeur, date_debut, date_fin, statut,
+    `SELECT id, stagiaire_nom, intitule, financeur, date_debut, date_fin, statut,
             prix_ht_centimes, tva_taux_bp
        FROM dossiers
       ORDER BY cree_le DESC`,
@@ -322,6 +341,181 @@ export async function insererDossier(
          VALUES (?, 'admin', ?, 'dossier_ouvert', 'dossiers', ?, '{}')`,
       )
       .bind(dossier.cree_le, ip, dossier.id),
+  ]);
+}
+
+export async function lireDossier(db: Preparer, id: string): Promise<DossierComplet | null> {
+  return une<DossierComplet>(
+    db,
+    `SELECT id, stagiaire_nom, stagiaire_email, entreprise, entreprise_siret, entreprise_adresse,
+            representant, financeur, intitule, date_debut, date_fin, statut,
+            heures_total, heures_coaching, heures_elearning, prix_ht_centimes, tva_taux_bp, modalite
+       FROM dossiers WHERE id = ?`,
+    id,
+  );
+}
+
+export async function lireEtatPieces(db: Preparer, dossierId: string): Promise<EtatPieces> {
+  const convention = await une<{ r2_cle: string; corps: string }>(
+    db,
+    `SELECT r2_cle, corps FROM retours
+      WHERE dossier_id = ? AND type = 'convention' AND r2_cle IS NOT NULL
+      ORDER BY version DESC LIMIT 1`,
+    dossierId,
+  );
+  const programme = await une<{ n: number }>(
+    db,
+    "SELECT count(*) AS n FROM pieces WHERE dossier_id = ? AND code = 'programme' AND seance_id = ''",
+    dossierId,
+  );
+  const devis = await une<{ annee: number; numero: number; r2_cle: string }>(
+    db,
+    `SELECT annee, numero, r2_cle FROM devis
+      WHERE dossier_id = ? AND statut != 'annule' AND r2_cle IS NOT NULL
+      ORDER BY annee, numero LIMIT 1`,
+    dossierId,
+  );
+  return { convention, programme: (programme?.n ?? 0) > 0, devis };
+}
+
+export async function clePiece(
+  db: Preparer,
+  dossierId: string,
+  code: "convention" | "programme",
+): Promise<string | null> {
+  const ligne = await une<{ r2_cle: string }>(
+    db,
+    `SELECT r2_cle FROM retours
+      WHERE dossier_id = ? AND type = ? AND r2_cle IS NOT NULL
+      ORDER BY version DESC LIMIT 1`,
+    dossierId,
+    code,
+  );
+  return ligne?.r2_cle ?? null;
+}
+
+export async function enregistrerProgramme(
+  db: Preparer,
+  entree: {
+    dossierId: string;
+    intitule: string;
+    heuresTotal: number;
+    heuresCoaching: number;
+    heuresElearning: number;
+    contenu: string;
+    recuLe: string;
+    ip: string;
+    userAgent: string;
+    sha256: string;
+    taille: number;
+  },
+): Promise<void> {
+  const programmeId = crypto.randomUUID();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO programmes (id, intitule, heures_total, heures_coaching, heures_elearning, contenu)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        programmeId,
+        entree.intitule,
+        entree.heuresTotal,
+        entree.heuresCoaching,
+        entree.heuresElearning,
+        entree.contenu,
+      ),
+    db.prepare("UPDATE dossiers SET programme_id = ? WHERE id = ? AND programme_id IS NULL").bind(programmeId, entree.dossierId),
+    db
+      .prepare(
+        `INSERT INTO pieces (
+           id, dossier_id, code, seance_id, libelle, indicateur, echeance,
+           echeance_verifiee_le, echeance_origine, statut, derniere_version
+         ) VALUES (?, ?, 'programme', '', 'Programme', NULL, NULL, NULL, 'registre', 'prete', 1)`,
+      )
+      .bind(crypto.randomUUID(), entree.dossierId),
+    db
+      .prepare(
+        `INSERT INTO retours (
+           id, dossier_id, type, seance_id, version, recu_le, ip, user_agent,
+           corps, mime, taille_octets, sha256, r2_cle
+         ) VALUES (?, ?, 'programme', '', 1, ?, ?, ?, '{}', 'application/pdf', ?, ?, ?)`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        entree.dossierId,
+        entree.recuLe,
+        entree.ip,
+        entree.userAgent,
+        entree.taille,
+        entree.sha256,
+        `scans/${entree.sha256}`,
+      ),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'programme_extrait', 'dossiers', ?, '{}')`,
+      )
+      .bind(entree.recuLe, entree.ip, entree.dossierId),
+  ]);
+}
+
+export async function enregistrerDevis(
+  db: Preparer,
+  entree: {
+    dossierId: string;
+    annee: number;
+    numero: number;
+    creeLe: string;
+    ht: number;
+    tauxBp: number;
+    tva: number;
+    ttc: number;
+    adresse: string;
+    sha256: string;
+    ip: string;
+    maintenant: string;
+  },
+): Promise<void> {
+  const suivant = entree.numero + 1;
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO sequences (cle, annee, prochain)
+         SELECT 'devis', ?, ?
+          WHERE NOT EXISTS (SELECT 1 FROM sequences WHERE cle = 'devis' AND annee = ?)`,
+      )
+      .bind(entree.annee, suivant, entree.annee),
+    db
+      .prepare("UPDATE sequences SET prochain = ? WHERE cle = 'devis' AND annee = ? AND prochain < ?")
+      .bind(suivant, entree.annee, suivant),
+    db
+      .prepare(
+        `INSERT INTO devis (
+           annee, numero, dossier_id, cree_le, statut,
+           montant_ht_centimes, tva_taux_bp, montant_tva_centimes, montant_ttc_centimes,
+           adresse_emise, sha256, r2_cle
+         ) VALUES (?, ?, ?, ?, 'emis', ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        entree.annee,
+        entree.numero,
+        entree.dossierId,
+        entree.creeLe,
+        entree.ht,
+        entree.tauxBp,
+        entree.tva,
+        entree.ttc,
+        entree.adresse,
+        entree.sha256,
+        `devis/${entree.sha256}`,
+      ),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'devis_emis', 'devis', ?, ?)`,
+      )
+      .bind(entree.maintenant, entree.ip, `${entree.annee}-${entree.numero}`, JSON.stringify({ annee: entree.annee, numero: entree.numero })),
   ]);
 }
 

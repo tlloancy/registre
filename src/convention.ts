@@ -162,6 +162,10 @@ function completerIntervalle(texte: string, saisie: SaisieDossier): void {
   if (!saisie.date_fin) saisie.date_fin = dateVersIso(trouve[2]);
 }
 
+export function jourEcrit(valeur: string): string {
+  return dateVersIso(valeur);
+}
+
 function dateVersIso(valeur: string): string {
   const brut = valeur.trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(brut)) return dateValide(brut) ? brut : "";
