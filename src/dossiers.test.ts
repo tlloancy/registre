@@ -20,6 +20,19 @@ describe("dossier", () => {
     expect(analyse.ok).toBe(false);
   });
 
+  it("ouvre sans e-mail, financeur ni date de fin", async () => {
+    const analyse = analyserDossier(
+      await formulaire({ stagiaire_email: "", financeur: "", date_fin: "" }),
+      "id",
+      "2026-11-03T18:00:00.000Z",
+    );
+    expect(analyse.ok).toBe(true);
+    if (!analyse.ok) return;
+    expect(analyse.dossier.stagiaire_email).toBe("");
+    expect(analyse.dossier.financeur).toBe("");
+    expect(analyse.dossier.date_fin).toBeNull();
+  });
+
   it("refuse une fin antérieure au début", async () => {
     const analyse = analyserDossier(
       await formulaire({ date_debut: "2026-05-13", date_fin: "2026-05-01" }),

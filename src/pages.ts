@@ -17,7 +17,7 @@ export type DossierVue = {
   intitule: string;
   financeur: string;
   date_debut: string;
-  date_fin: string;
+  date_fin: string | null;
   statut: string;
   prix_ht_centimes: number;
   tva_taux_bp: number;
@@ -170,7 +170,7 @@ function tableau(dossiers: readonly DossierVue[]): string {
 <td>${echapper(dossier.stagiaire_nom)}</td>
 <td>${echapper(dossier.intitule)}</td>
 <td>${echapper(dossier.financeur)}</td>
-<td>${echapper(afficherJour(dossier.date_debut))} – ${echapper(afficherJour(dossier.date_fin))}</td>
+<td>${echapper(periode(dossier.date_debut, dossier.date_fin))}</td>
 <td>${echapper(euros(dossier.prix_ht_centimes))}</td>
 <td>${echapper(taux(dossier.tva_taux_bp))}</td>
 <td>${echapper(statut(dossier.statut))}</td>
@@ -224,6 +224,11 @@ function echapper(valeur: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function periode(debut: string, fin: string | null): string {
+  if (!fin) return afficherJour(debut);
+  return `${afficherJour(debut)} – ${afficherJour(fin)}`;
 }
 
 function afficherJour(iso: string): string {

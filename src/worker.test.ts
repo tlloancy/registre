@@ -150,11 +150,14 @@ describe("accès", () => {
     expect(nombreDossiers()).toBe(0);
   });
 
-  it("ouvre le dossier depuis la convention et demande ce qui manque", async () => {
+  it("ouvre le dossier même sans e-mail, financeur ni date de fin", async () => {
     const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
     const cookies = cookieEntete(ouverte);
     const csrf = champCsrf(await (await repondre(demande("GET", "/", cookies), env())).text());
-    const pdf = pdfTexte(`CONVENTION DE FORMATION PROFESSIONNELLE
+    const depot = await deposerPdf(
+      cookies,
+      csrf,
+      pdfTexte(`CONVENTION DE FORMATION PROFESSIONNELLE
 N° de convention : 2026-TEST-001
 2. Le beneficiaire / Entreprise
 Raison sociale : Atelier Nord
@@ -170,53 +173,27 @@ Duree totale : 14 heures
 Date de debut : 13 mai 2026
 Article 5 : Prix et reglement
 Montant total : 600 EUR HT soit 720 EUR TTC
-conforme au devis n° D2600001.`);
-    const depot = await deposerPdf(cookies, csrf, pdf);
-    const page = await depot.text();
-    expect(depot.status).toBe(400);
-    expect(page).toContain("Camille MARTIN");
-    expect(page).toContain("La date de fin est invalide.");
-    expect(page).toContain("e-mail du stagiaire est invalide.");
-    expect(page).toContain("Le financeur est vide.");
-    expect(page).toContain("Convention 2026-TEST-001");
-    expect(nombreDossiers()).toBe(0);
-    expect(fichiers.objets.size).toBe(1);
-    expect([...fichiers.objets.values()][0]?.[0]).toBe(0x25);
-    const sha = [...fichiers.objets.keys()][0]?.slice("scans/".length) ?? "";
-    const creation = await repondre(
-      demande("POST", "/dossiers", cookies, {
-        csrf,
-        sha256: sha,
-        numero: "2026-TEST-001",
-        devis: "D2600001",
-        stagiaire_nom: "Camille MARTIN",
-        stagiaire_email: "camille@example.com",
-        entreprise: "Atelier Nord",
-        entreprise_siret: "12345678900011",
-        entreprise_adresse: "1 rue des Lilas, 75011 Paris",
-        representant: "Camille MARTIN",
-        financeur: "AGEFICE",
-        intitule: "Administration Linux",
-        date_debut: "2026-05-13",
-        date_fin: "2026-05-15",
-        heures_total: "14",
-        heures_coaching: "14",
-        heures_elearning: "0",
-        prix_ht: "600",
-        tva: "20",
-        modalite: "14 heures de coaching individuel (visioconference ou presentiel)",
-      }),
-      env(),
+conforme au devis n° D2600001.`),
     );
-    expect(creation.status).toBe(303);
-    const ligne = dbCourante().prepare("SELECT sha256, r2_cle, corps FROM retours").get() as {
+    expect(depot.status).toBe(303);
+    const html = await (await repondre(demande("GET", "/", cookies), env())).text();
+    expect(html).toContain("Camille MARTIN");
+    expect(html).toContain("13/05/2026");
+    expect(html).not.toContain("Aucun dossier.");
+    const ligne = dbCourante()
+      .prepare("SELECT stagiaire_email, financeur, date_fin FROM dossiers")
+      .get() as { stagiaire_email: string; financeur: string; date_fin: string | null };
+    expect(ligne.stagiaire_email).toBe("");
+    expect(ligne.financeur).toBe("");
+    expect(ligne.date_fin).toBeNull();
+    const retour = dbCourante().prepare("SELECT sha256, r2_cle, corps FROM retours").get() as {
       sha256: string;
       r2_cle: string;
       corps: string;
     };
-    expect(ligne.r2_cle).toBe(`scans/${ligne.sha256}`);
-    expect(ligne.corps).toContain("2026-TEST-001");
-    expect(fichiers.objets.has(ligne.r2_cle)).toBe(true);
+    expect(retour.r2_cle).toBe(`scans/${retour.sha256}`);
+    expect(retour.corps).toContain("2026-TEST-001");
+    expect([...fichiers.objets.values()][0]?.[0]).toBe(0x25);
   });
 
   it("enregistre un dossier lu en entier et échappe le nom", async () => {
@@ -326,6 +303,7 @@ function ouvrirBase(): void {
   baseSql = new DatabaseSync(":memory:");
   baseSql.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
   baseSql.exec(readFileSync(new URL("../migrations/0002_numero_tva.sql", import.meta.url), "utf8"));
+  baseSql.exec(readFileSync(new URL("../migrations/0003_dossier_incomplet.sql", import.meta.url), "utf8"));
   baseSql
     .prepare(
       `UPDATE reglages

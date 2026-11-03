@@ -49,11 +49,7 @@ describe("convention", () => {
     expect(lecture.saisie.modalite).toContain("e-learning autonome");
     expect(lecture.numero).toBe("2026-OLIVIER-001");
     expect(lecture.devis).toBe("D2600007");
-    expect(lecture.raisons).toEqual([
-      "L'e-mail du stagiaire est invalide.",
-      "Le financeur est vide.",
-      "La date de fin est invalide.",
-    ]);
+    expect(lecture.raisons).toEqual([]);
   });
 
   it("n'invente pas le taux quand le TTC est absent", () => {

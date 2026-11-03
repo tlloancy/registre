@@ -33,7 +33,7 @@ export type DossierPret = {
   financeur_dossier: string;
   intitule: string;
   date_debut: string;
-  date_fin: string;
+  date_fin: string | null;
   heures_total: number;
   heures_coaching: number;
   heures_elearning: number;
@@ -74,7 +74,7 @@ export function analyserDossier(
   const raisons = raisonsSaisie(saisie);
   if (raisons.length > 0) return { ok: false, raison: raisons[0] ?? "Le dossier est incomplet.", saisie };
   const debut = jour(saisie.date_debut);
-  const fin = jour(saisie.date_fin);
+  const fin = saisie.date_fin === "" ? null : jour(saisie.date_fin);
   const heuresTotal = entier(saisie.heures_total);
   const heuresCoaching = entier(saisie.heures_coaching);
   const heuresElearning = entier(saisie.heures_elearning);
@@ -82,7 +82,7 @@ export function analyserDossier(
   const tva = pourcentEnBp(saisie.tva);
   if (
     !debut ||
-    !fin ||
+    (saisie.date_fin !== "" && !fin) ||
     heuresTotal === null ||
     heuresCoaching === null ||
     heuresElearning === null ||
@@ -124,13 +124,14 @@ export function raisonsSaisie(saisie: SaisieDossier): string[] {
   if (Object.values(saisie).some((valeur) => [...valeur].length > 500)) return ["Un champ est trop long."];
   const raisons: string[] = [];
   if (saisie.stagiaire_nom === "") raisons.push("Le nom du stagiaire est vide.");
-  if (!emailValide(saisie.stagiaire_email)) raisons.push("L'e-mail du stagiaire est invalide.");
-  if (saisie.financeur === "") raisons.push("Le financeur est vide.");
+  if (saisie.stagiaire_email !== "" && !emailValide(saisie.stagiaire_email)) {
+    raisons.push("L'e-mail du stagiaire est invalide.");
+  }
   if (saisie.intitule === "") raisons.push("L'intitulé est vide.");
   const debut = jour(saisie.date_debut);
-  const fin = jour(saisie.date_fin);
+  const fin = saisie.date_fin === "" ? null : jour(saisie.date_fin);
   if (!debut) raisons.push("La date de début est invalide.");
-  if (!fin) raisons.push("La date de fin est invalide.");
+  if (saisie.date_fin !== "" && !fin) raisons.push("La date de fin est invalide.");
   if (debut && fin && fin < debut) raisons.push("La date de fin précède le début.");
   if (entier(saisie.heures_total) === null || entier(saisie.heures_coaching) === null || entier(saisie.heures_elearning) === null) {
     raisons.push("Les heures sont invalides.");

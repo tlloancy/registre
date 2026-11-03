@@ -48,7 +48,7 @@ export type DossierLigne = {
   intitule: string;
   financeur: string;
   date_debut: string;
-  date_fin: string;
+  date_fin: string | null;
   statut: string;
   prix_ht_centimes: number;
   tva_taux_bp: number;
