@@ -229,6 +229,11 @@ Module 1 Fondamentaux`),
     expect(page.status).toBe(200);
     expect(html).toContain("Programme");
     expect(html).toContain("Devis D2600007");
+    expect(html).toContain("Analyse du besoin");
+    expect(html).toContain("Positionnement");
+    expect(html).toContain("Convocation");
+    expect(html).toContain("Émargement");
+    expect(html).toContain("Évaluation de sortie");
     expect(html).toContain("720,00 €");
     expect(html).toContain("Télécharger");
     const devis = await repondre(demande("GET", `/dossiers/${id}/devis`, cookies), env());

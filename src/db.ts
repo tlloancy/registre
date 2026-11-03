@@ -71,6 +71,7 @@ export type EtatPieces = {
   convention: { r2_cle: string; corps: string } | null;
   programme: boolean;
   devis: { annee: number; numero: number; r2_cle: string } | null;
+  modeles: string[];
 };
 
 export async function lireHashMotDePasse(db: Preparer): Promise<string | null> {
@@ -375,23 +376,82 @@ export async function lireEtatPieces(db: Preparer, dossierId: string): Promise<E
       ORDER BY annee, numero LIMIT 1`,
     dossierId,
   );
-  return { convention, programme: (programme?.n ?? 0) > 0, devis };
+  const modeles = await plusieurs<{ seance_id: string }>(
+    db,
+    "SELECT seance_id FROM retours WHERE dossier_id = ? AND type = 'modele' AND r2_cle IS NOT NULL",
+    dossierId,
+  );
+  return { convention, programme: (programme?.n ?? 0) > 0, devis, modeles: modeles.map((ligne) => ligne.seance_id) };
 }
 
-export async function clePiece(
+export async function lireContenuProgramme(db: Preparer, dossierId: string): Promise<string> {
+  const ligne = await une<{ contenu: string }>(
+    db,
+    `SELECT programmes.contenu AS contenu
+       FROM dossiers
+       JOIN programmes ON programmes.id = dossiers.programme_id
+      WHERE dossiers.id = ?`,
+    dossierId,
+  );
+  return ligne?.contenu ?? "";
+}
+
+export async function cleRetour(
   db: Preparer,
   dossierId: string,
-  code: "convention" | "programme",
+  type: string,
+  seanceId = "",
 ): Promise<string | null> {
   const ligne = await une<{ r2_cle: string }>(
     db,
     `SELECT r2_cle FROM retours
-      WHERE dossier_id = ? AND type = ? AND r2_cle IS NOT NULL
+      WHERE dossier_id = ? AND type = ? AND seance_id = ? AND r2_cle IS NOT NULL
       ORDER BY version DESC LIMIT 1`,
     dossierId,
-    code,
+    type,
+    seanceId,
   );
   return ligne?.r2_cle ?? null;
+}
+
+export async function enregistrerModele(
+  db: Preparer,
+  entree: {
+    dossierId: string;
+    code: string;
+    recuLe: string;
+    ip: string;
+    userAgent: string;
+    sha256: string;
+    taille: number;
+  },
+): Promise<void> {
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO retours (
+           id, dossier_id, type, seance_id, version, recu_le, ip, user_agent,
+           corps, mime, taille_octets, sha256, r2_cle
+         ) VALUES (?, ?, 'modele', ?, 1, ?, ?, ?, '{}', 'application/pdf', ?, ?, ?)`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        entree.dossierId,
+        entree.code,
+        entree.recuLe,
+        entree.ip,
+        entree.userAgent,
+        entree.taille,
+        entree.sha256,
+        `scans/${entree.sha256}`,
+      ),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'modele_produit', 'dossiers', ?, ?)`,
+      )
+      .bind(entree.recuLe, entree.ip, entree.dossierId, JSON.stringify({ code: entree.code })),
+  ]);
 }
 
 export async function enregistrerProgramme(

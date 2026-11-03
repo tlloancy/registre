@@ -15,7 +15,7 @@ import {
   insererDossier,
   lireCompteurGlobal,
   lireCompteurIp,
-  clePiece,
+  cleRetour,
   lireDossier,
   lireEtatPieces,
   lireHashMotDePasse,
@@ -39,6 +39,7 @@ import { entetes, reponse, reponseHtml, reponseOctets, redirection } from "./ent
 import { phraseCorrespond, validerPhrase } from "./mot-de-passe.ts";
 import { numeroDevis } from "./montants.ts";
 import { FEUILLE, pageAccueil, pageConnexion, pageDossier } from "./pages.ts";
+import { MODELES } from "./modeles.ts";
 import { numeroConvention, produirePieces, type Stockage } from "./produire.ts";
 import { prouverPbkdf2 } from "./preuve.ts";
 
@@ -94,14 +95,16 @@ async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response
   return reponse(404, "Cette page n'existe pas.\n");
 }
 
-function cheminDossier(pathname: string): { id: string; piece: "convention" | "programme" | "devis" | null } | null {
-  const trouve = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(convention|programme|devis))?$/.exec(
+const CODES_FICHIER = new Set<string>(["convention", "programme", "devis", ...MODELES.map(([code]) => code)]);
+
+function cheminDossier(pathname: string): { id: string; piece: string | null } | null {
+  const trouve = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z]+))?$/.exec(
     pathname,
   );
   if (!trouve?.[1]) return null;
-  const piece = trouve[2];
-  if (piece === "convention" || piece === "programme" || piece === "devis") return { id: trouve[1], piece };
-  return { id: trouve[1], piece: null };
+  if (!trouve[2]) return { id: trouve[1], piece: null };
+  if (!CODES_FICHIER.has(trouve[2])) return null;
+  return { id: trouve[1], piece: trouve[2] };
 }
 
 async function voirDossier(requete: Request, env: Env, id: string): Promise<Response> {
@@ -120,6 +123,7 @@ async function voirDossier(requete: Request, env: Env, id: string): Promise<Resp
       programme: etat.programme,
       devis: etat.devis,
       numeroConvention: etat.convention ? numeroConvention(etat.convention.corps) : "",
+      modeles: etat.modeles,
     }, session.csrf),
   );
 }
@@ -128,7 +132,7 @@ async function telecharger(
   requete: Request,
   env: Env,
   id: string,
-  piece: "convention" | "programme" | "devis",
+  piece: string,
 ): Promise<Response> {
   const secret = await exigerSecret(env);
   const session = await sessionOuverte(requete, env);
@@ -148,16 +152,20 @@ async function telecharger(
 async function cleTelechargement(
   env: Env,
   id: string,
-  piece: "convention" | "programme" | "devis",
+  piece: string,
 ): Promise<{ cle: string; nom: string } | null> {
   if (piece === "devis") {
     const etat = await lireEtatPieces(env.DB, id);
     if (!etat.devis?.r2_cle) return null;
     return { cle: etat.devis.r2_cle, nom: `devis-${numeroDevis(etat.devis.annee, etat.devis.numero)}.pdf` };
   }
-  const cle = await clePiece(env.DB, id, piece);
+  if (piece === "convention" || piece === "programme") {
+    const cle = await cleRetour(env.DB, id, piece);
+    return cle ? { cle, nom: `${piece}.pdf` } : null;
+  }
+  const cle = await cleRetour(env.DB, id, "modele", piece);
   if (!cle) return null;
-  return { cle, nom: piece === "programme" ? "programme.pdf" : "convention.pdf" };
+  return { cle, nom: `${piece}.pdf` };
 }
 
 async function accueilOuConnexion(requete: Request, env: Env): Promise<Response> {

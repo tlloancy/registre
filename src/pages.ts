@@ -1,4 +1,5 @@
 import type { SaisieDossier } from "./dossiers.ts";
+import { MODELES } from "./modeles.ts";
 import { afficherEuros, afficherJour, afficherTaux, numeroDevis, tvaCentimes } from "./montants.ts";
 
 export type Fiche = {
@@ -171,6 +172,7 @@ export type PiecesVues = {
   programme: boolean;
   devis: { annee: number; numero: number } | null;
   numeroConvention: string;
+  modeles: readonly string[];
 };
 
 export function pageDossier(
@@ -198,9 +200,16 @@ export function pageDossier(
 ${pieces.numeroConvention ? `<p>Convention ${echapper(pieces.numeroConvention)}</p>` : ""}
 <h2>Pièces</h2>
 <ul>
+${elementPiece(dossier.id, "analyse", libelleModele("analyse"), pieces.modeles.includes("analyse"))}
+${elementPiece(dossier.id, "devis", pieces.devis ? `Devis ${numeroDevis(pieces.devis.annee, pieces.devis.numero)}` : "Devis", pieces.devis !== null)}
+${elementPiece(dossier.id, "positionnement", libelleModele("positionnement"), pieces.modeles.includes("positionnement"))}
 ${elementPiece(dossier.id, "convention", "Convention", pieces.convention)}
 ${elementPiece(dossier.id, "programme", "Programme", pieces.programme)}
-${elementPiece(dossier.id, "devis", pieces.devis ? `Devis ${numeroDevis(pieces.devis.annee, pieces.devis.numero)}` : "Devis", pieces.devis !== null)}
+${elementPiece(dossier.id, "reglement", libelleModele("reglement"), pieces.modeles.includes("reglement"))}
+${elementPiece(dossier.id, "convocation", libelleModele("convocation"), pieces.modeles.includes("convocation"))}
+${elementPiece(dossier.id, "emargement", libelleModele("emargement"), pieces.modeles.includes("emargement"))}
+${elementPiece(dossier.id, "suivi", libelleModele("suivi"), pieces.modeles.includes("suivi"))}
+${elementPiece(dossier.id, "qcm", libelleModele("qcm"), pieces.modeles.includes("qcm"))}
 </ul>
 <section class="fiche">
 <dl>
@@ -217,6 +226,10 @@ ${ligne("Prix TTC", afficherEuros(ttc))}
 ${ligne("Statut", statut(dossier.statut))}
 </dl>
 </section>`);
+}
+
+function libelleModele(code: string): string {
+  return MODELES.find(([valeur]) => valeur === code)?.[1] ?? code;
 }
 
 function elementPiece(id: string, code: string, libelle: string, present: boolean): string {

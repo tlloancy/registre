@@ -1,6 +1,14 @@
-import { jourEcrit } from "./convention.ts";
-import type { Organisme, Preparer } from "./db.ts";
-import { enregistrerDevis, enregistrerProgramme, lireEtatPieces, lireDossier } from "./db.ts";
+import { jourEcrit, pdfReconnu } from "./convention.ts";
+import type { DossierComplet, Organisme, Preparer } from "./db.ts";
+import {
+  enregistrerDevis,
+  enregistrerModele,
+  enregistrerProgramme,
+  lireContenuProgramme,
+  lireDossier,
+  lireEtatPieces,
+} from "./db.ts";
+import { REGLEMENT_URL, textesModeles } from "./modeles.ts";
 import { afficherEuros, afficherJour, afficherTaux, tvaCentimes } from "./montants.ts";
 import { ecrirePdf } from "./pdf-ecrit.ts";
 import { textePdf } from "./pdf.ts";
@@ -96,34 +104,40 @@ export async function produirePieces(
   const dossier = await lireDossier(db, dossierId);
   const etat = await lireEtatPieces(db, dossierId);
   if (!dossier || !etat.convention) return;
-  const programmeManque = !etat.programme;
   const numeroConnu = numeroDepuis(etat.convention.corps);
+  const programmeManque = !etat.programme;
   const devisManque = !etat.devis && numeroConnu !== "";
-  if (!programmeManque && !devisManque) return;
   let texte = "";
-  try {
-    const octets = await lireObjet(fichiers, etat.convention.r2_cle);
-    texte = octets ? await textePdf(octets.slice()) : "";
-  } catch {
-    texte = "";
+  if (programmeManque || devisManque) {
+    try {
+      const octets = await lireObjet(fichiers, etat.convention.r2_cle);
+      texte = octets ? await textePdf(octets.slice()) : "";
+    } catch {
+      texte = "";
+    }
   }
   if (programmeManque) await poserProgramme(db, fichiers, dossier, texte, ip, userAgent, maintenant);
   if (devisManque) {
     const mention = mentionDevis(texte);
     const numero = mention.numero || numeroConnu;
-    if (!mention.dateIso) return;
-    await poserDevis(
-      db,
-      fichiers,
-      dossier,
-      organisme,
-      numero,
-      mention.dateIso,
-      numeroConvention(etat.convention.corps),
-      ip,
-      maintenant,
-    );
+    if (mention.dateIso) {
+      await poserDevis(
+        db,
+        fichiers,
+        dossier,
+        organisme,
+        numero,
+        mention.dateIso,
+        numeroConvention(etat.convention.corps),
+        ip,
+        maintenant,
+      );
+    }
   }
+  const presents = new Set(etat.modeles);
+  const programme = (await lireContenuProgramme(db, dossierId)) || extraireProgramme(texte);
+  await poserModeles(db, fichiers, dossier, organisme, programme, numeroConvention(etat.convention.corps), presents, ip, userAgent, maintenant);
+  if (!presents.has("reglement")) await poserReglement(db, fichiers, dossier.id, ip, userAgent, maintenant);
 }
 
 function detailHeures(coaching: number, elearning: number): string {
@@ -239,6 +253,71 @@ async function poserDevis(
       sha256,
       ip,
       maintenant,
+    });
+  } catch {
+    return;
+  }
+}
+
+async function poserModeles(
+  db: Preparer,
+  fichiers: Stockage,
+  dossier: DossierComplet,
+  organisme: Organisme,
+  programme: string,
+  convention: string,
+  presents: Set<string>,
+  ip: string,
+  userAgent: string,
+  maintenant: string,
+): Promise<void> {
+  for (const modele of textesModeles(dossier, organisme, programme, convention)) {
+    if (presents.has(modele.code)) continue;
+    const pdf = ecrirePdf(modele.texte);
+    const sha256 = await empreinte(pdf);
+    if (!(await poser(fichiers, `scans/${sha256}`, pdf))) continue;
+    try {
+      await enregistrerModele(db, {
+        dossierId: dossier.id,
+        code: modele.code,
+        recuLe: maintenant,
+        ip,
+        userAgent,
+        sha256,
+        taille: pdf.byteLength,
+      });
+    } catch {
+      continue;
+    }
+  }
+}
+
+async function poserReglement(
+  db: Preparer,
+  fichiers: Stockage,
+  dossierId: string,
+  ip: string,
+  userAgent: string,
+  maintenant: string,
+): Promise<void> {
+  try {
+    const reponse = await fetch(REGLEMENT_URL, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!reponse.ok) return;
+    const octets = new Uint8Array(await reponse.arrayBuffer());
+    if (!pdfReconnu(octets) || octets.byteLength > 2_000_000) return;
+    const sha256 = await empreinte(octets);
+    if (!(await poser(fichiers, `scans/${sha256}`, octets))) return;
+    await enregistrerModele(db, {
+      dossierId,
+      code: "reglement",
+      recuLe: maintenant,
+      ip,
+      userAgent,
+      sha256,
+      taille: octets.byteLength,
     });
   } catch {
     return;
