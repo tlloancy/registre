@@ -25,9 +25,6 @@ export function validerPhrase(phrase: string): { ok: true } | { ok: false; raiso
   if ([...phrase].length < PHRASE_MIN) {
     return { ok: false, raison: "La phrase doit contenir au moins 20 caractères." };
   }
-  if (!phrase.includes(" ")) {
-    return { ok: false, raison: "La phrase doit contenir un espace." };
-  }
   return { ok: true };
 }
 

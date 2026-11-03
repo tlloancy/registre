@@ -11,10 +11,11 @@ const HASH = "a".repeat(44);
 const SEL = "b".repeat(24);
 
 describe("sql distant", () => {
-  it("ouvre la transaction en majuscules et n'écrit pas la phrase", () => {
+  it("écrit la mise à jour sans transaction SQL et sans la phrase", () => {
     const sql = sqlMiseAJour(empreinte(), "2026-11-03T15:00:00.000Z", null);
-    expect(sql.startsWith("BEGIN IMMEDIATE;\n")).toBe(true);
-    expect(sql.endsWith("COMMIT;\n")).toBe(true);
+    expect(sql.startsWith("UPDATE reglages")).toBe(true);
+    expect(sql).not.toContain("BEGIN");
+    expect(sql).not.toContain("COMMIT");
     expect(sql).toContain("100000");
     expect(sql).toContain(HASH);
     expect(sql).not.toContain("INSERT INTO audit");
@@ -63,7 +64,8 @@ describe("pose distante", () => {
         }
         const sql = args.at(-1) ?? "";
         expect(sql).not.toContain(PHRASE);
-        expect(sql.startsWith("BEGIN IMMEDIATE;\n")).toBe(true);
+        expect(sql).not.toContain("BEGIN");
+        expect(sql.startsWith("UPDATE reglages")).toBe(true);
         expect(sql).toContain("PBKDF2-SHA-256");
         return { code: 0, stdout: "[]", stderr: "" };
       },

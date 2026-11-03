@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { type Empreinte, deriver, phraseDepuisEntree, validerPhrase } from "./mot-de-passe.ts";
@@ -101,15 +102,13 @@ export function sqlMiseAJour(
       : `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
 VALUES (${texteSql(definiLe)}, 'commande', NULL, 'mot_de_passe_remplace', 'reglages', '1', ${texteSql(JSON.stringify(audit))});
 `;
-  return `BEGIN IMMEDIATE;
-${ligneAudit}UPDATE reglages
+  return `${ligneAudit}UPDATE reglages
    SET mot_de_passe_algo = ${texteSql(empreinte.algo)},
        mot_de_passe_iterations = ${empreinte.iterations},
        mot_de_passe_sel = ${texteSql(empreinte.sel)},
        mot_de_passe_hash = ${texteSql(empreinte.hash)},
        mot_de_passe_defini_le = ${texteSql(definiLe)}
  WHERE id = 1;
-COMMIT;
 `;
 }
 
@@ -140,8 +139,8 @@ export async function poserMotDePasseDistant(
     "--command",
     SELECT_DISTANT,
   ]);
-  if (lecture.code !== 0) {
-    return { ok: false, raison: "La lecture de la base distante a échoué." };
+  if (!executionUtile(lecture)) {
+    return { ok: false, raison: `La lecture de la base distante a échoué. ${detailExecution(lecture)}`.trim() };
   }
   const ligne = lireLigneDistante(lecture.stdout);
   if (!ligne) return { ok: false, raison: "La table reglages n'a pas de ligne id = 1." };
@@ -170,10 +169,22 @@ export async function poserMotDePasseDistant(
     "--command",
     sql,
   ]);
-  if (ecriture.code !== 0) {
-    return { ok: false, raison: "La base distante a refusé la mise à jour." };
+  if (!executionUtile(ecriture)) {
+    return { ok: false, raison: raisonRefusDistant(ecriture, empreinte) };
   }
   return { ok: true, remplace: deja };
+}
+
+function raisonRefusDistant(execution: Execution, empreinte: Empreinte): string {
+  const brut = `${execution.stdout}\n${execution.stderr}`
+    .split(empreinte.hash)
+    .join("")
+    .split(empreinte.sel)
+    .join("");
+  const note = brut.match(/"text":\s*"((?:[^"\\]|\\.)*)"/);
+  const detail = note?.[1]?.replace(/\\"/g, '"').trim();
+  if (detail) return `La base distante a refusé la mise à jour. ${detail}`;
+  return "La base distante a refusé la mise à jour.";
 }
 
 function texteSql(valeur: string): string {
@@ -208,7 +219,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const phrase = phraseDepuisEntree(lireEntree());
+  const phrase = phraseDepuisEntree(await lireEntree());
   const resultat = distant
     ? await poserMotDePasseDistant(phrase, remplacer, executerWrangler)
     : await poserMotDePasse(fichiers[0], phrase, remplacer);
@@ -220,22 +231,22 @@ async function main(): Promise<void> {
   process.stdout.write(resultat.remplace ? "Mot de passe remplacé.\n" : "Mot de passe enregistré.\n");
 }
 
-function lireEntree(): string {
+async function lireEntree(): Promise<string> {
   if (!process.stdin.isTTY) return readFileSync(0, "utf8");
-  process.stderr.write("Phrase, puis Ctrl-D :\n");
-  spawnSync("stty", ["-echo"], { stdio: "inherit" });
+  const lecture = createInterface({ input: process.stdin, output: process.stderr });
   try {
-    return readFileSync(0, "utf8");
+    return await lecture.question("Colle la phrase puis Entrée :\n");
   } finally {
-    spawnSync("stty", ["echo"], { stdio: "inherit" });
-    process.stderr.write("\n");
+    lecture.close();
   }
 }
 
 function executerWrangler(args: string[]): Execution {
-  const resultat = spawnSync(cheminWrangler(), args, {
+  const cli = fileURLToPath(new URL("../node_modules/wrangler/wrangler-dist/cli.js", import.meta.url));
+  const resultat = spawnSync(process.execPath, [cli, ...args], {
     encoding: "utf8",
     cwd: fileURLToPath(new URL("..", import.meta.url)),
+    stdio: ["ignore", "pipe", "pipe"],
   });
   return {
     code: resultat.status ?? 1,
@@ -244,8 +255,13 @@ function executerWrangler(args: string[]): Execution {
   };
 }
 
-function cheminWrangler(): string {
-  return fileURLToPath(new URL("../node_modules/.bin/wrangler", import.meta.url));
+function executionUtile(execution: Execution): boolean {
+  return execution.code === 0 || execution.stdout.includes('"success": true');
+}
+
+function detailExecution(execution: Execution): string {
+  const note = `${execution.stdout}\n${execution.stderr}`.match(/"text":\s*"((?:[^"\\]|\\.)*)"/);
+  return note?.[1]?.replace(/\\"/g, '"').trim() ?? "";
 }
 
 function usage(): string {

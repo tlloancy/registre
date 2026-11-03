@@ -40,15 +40,8 @@ describe("phrase", () => {
     expect(validerPhrase("é".repeat(19)).ok).toBe(false);
   });
 
-  it("refuse 20 caractères sans espace", () => {
-    expect(validerPhrase("a".repeat(20))).toEqual({
-      ok: false,
-      raison: "La phrase doit contenir un espace.",
-    });
-  });
-
-  it("accepte 20 caractères dont un espace", () => {
-    expect(validerPhrase(`${"a".repeat(19)} `)).toEqual({ ok: true });
+  it("accepte 20 caractères sans espace", () => {
+    expect(validerPhrase("a".repeat(20))).toEqual({ ok: true });
   });
 });
 
