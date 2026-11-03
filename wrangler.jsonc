@@ -15,14 +15,8 @@
     {
       "binding": "DB",
       "database_name": "registre",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "9005795a-14a1-4294-b3c7-034ff80849b8",
       "migrations_dir": "migrations"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "FICHIERS",
-      "bucket_name": "registre"
     }
   ]
 }

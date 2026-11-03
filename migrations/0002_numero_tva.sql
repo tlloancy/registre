@@ -1,0 +1,1 @@
+ALTER TABLE reglages ADD COLUMN numero_tva TEXT NOT NULL DEFAULT '';
