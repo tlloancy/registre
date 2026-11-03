@@ -3,10 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run"
+    "test": "NODE_OPTIONS='--disable-warning=ExperimentalWarning' vitest run",
+    "mot-de-passe": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/mot-de-passe-commande.ts"
   },
   "devDependencies": {
     "typescript": "5.9.3",
-    "vitest": "3.2.4"
+    "vitest": "3.2.4",
+    "wrangler": "4.157.0"
   }
 }
