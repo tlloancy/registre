@@ -26,9 +26,10 @@ export function reponseOctets(
   corps: Uint8Array,
   type: string,
   nom: string,
+  disposition: "inline" | "attachment" = "attachment",
 ): Response {
   const headers = entetes(type);
-  headers.set("Content-Disposition", `attachment; filename="${nom}"`);
+  headers.set("Content-Disposition", `${disposition}; filename="${nom}"`);
   return new Response(corps, { status: 200, headers });
 }
 

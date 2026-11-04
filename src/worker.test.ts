@@ -236,9 +236,18 @@ Module 1 Fondamentaux`),
     expect(html).toContain("Évaluation de sortie");
     expect(html).toContain("720,00 €");
     expect(html).toContain("Télécharger");
+    expect(html).toContain("Aperçu");
+    expect(html).toContain("Avant le début");
+    expect(html).toContain("Pendant la formation");
+    expect(html).toContain("Après la formation");
+    expect(html).toContain("À faire signer");
     const devis = await repondre(demande("GET", `/dossiers/${id}/devis`, cookies), env());
     expect(devis.status).toBe(200);
     expect(devis.headers.get("Content-Type")).toBe("application/pdf");
+    expect(devis.headers.get("Content-Disposition")).toContain("attachment");
+    const apercu = await repondre(demande("GET", `/dossiers/${id}/devis/apercu`, cookies), env());
+    expect(apercu.status).toBe(200);
+    expect(apercu.headers.get("Content-Disposition")).toContain("inline");
     const octets = new Uint8Array(await devis.arrayBuffer());
     expect(octets[0]).toBe(0x25);
     expect(new TextDecoder().decode(octets)).toContain("D2600007");

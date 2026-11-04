@@ -90,21 +90,24 @@ async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response
   if (requete.method === "POST" && url.pathname === "/dossiers") return creerDossier(requete, env);
   if (requete.method === "GET") {
     const chemin = cheminDossier(url.pathname);
-    if (chemin) return chemin.piece ? telecharger(requete, env, chemin.id, chemin.piece) : voirDossier(requete, env, chemin.id);
+    if (chemin) {
+      return chemin.piece
+        ? telecharger(requete, env, chemin.id, chemin.piece, chemin.apercu)
+        : voirDossier(requete, env, chemin.id);
+    }
   }
   return reponse(404, "Cette page n'existe pas.\n");
 }
 
 const CODES_FICHIER = new Set<string>(["convention", "programme", "devis", ...MODELES.map(([code]) => code)]);
 
-function cheminDossier(pathname: string): { id: string; piece: string | null } | null {
-  const trouve = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z]+))?$/.exec(
+function cheminDossier(pathname: string): { id: string; piece: string | null; apercu: boolean } | null {
+  const trouve = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z]+)(?:\/(apercu))?)?$/.exec(
     pathname,
   );
   if (!trouve?.[1]) return null;
-  if (!trouve[2]) return { id: trouve[1], piece: null };
-  if (!CODES_FICHIER.has(trouve[2])) return null;
-  return { id: trouve[1], piece: trouve[2] };
+  if (trouve[2] && !CODES_FICHIER.has(trouve[2])) return null;
+  return { id: trouve[1], piece: trouve[2] ?? null, apercu: trouve[3] === "apercu" };
 }
 
 async function voirDossier(requete: Request, env: Env, id: string): Promise<Response> {
@@ -133,6 +136,7 @@ async function telecharger(
   env: Env,
   id: string,
   piece: string,
+  apercu: boolean,
 ): Promise<Response> {
   const secret = await exigerSecret(env);
   const session = await sessionOuverte(requete, env);
@@ -143,7 +147,12 @@ async function telecharger(
   try {
     const objet = await env.FICHIERS.get(cible.cle);
     if (!objet) return reponse(404, "Cette pièce n'est pas là.\n");
-    return reponseOctets(new Uint8Array(await objet.arrayBuffer()), "application/pdf", cible.nom);
+    return reponseOctets(
+      new Uint8Array(await objet.arrayBuffer()),
+      "application/pdf",
+      cible.nom,
+      apercu ? "inline" : "attachment",
+    );
   } catch {
     return reponse(503, "Le stockage ne répond pas.\n");
   }

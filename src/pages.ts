@@ -31,8 +31,12 @@ body { margin: 0; color: #1c1c1c; background: #f6f5f3; font-family: "Segoe UI", 
 main { max-width: 52rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 h1 { font-size: 1.6rem; font-weight: 650; margin: 0; }
 h2 { font-size: 1.15rem; margin: 1.6rem 0 0.6rem; }
+h3 { font-size: 1rem; font-weight: 650; margin: 1.3rem 0 0.2rem; }
 p { line-height: 1.4; }
 a { color: inherit; }
+.piece { margin: 0.85rem 0 0; }
+.geste { color: #4d4a45; margin: 0.15rem 0 0; }
+.liens a { margin-right: 1rem; }
 ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
 li { margin: 0.35rem 0; }
 .barre { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
@@ -181,6 +185,7 @@ export function pageDossier(
     entreprise_siret: string;
     entreprise_adresse: string;
     heures_total: number;
+    heures_elearning: number;
     modalite: string;
   },
   pieces: PiecesVues,
@@ -199,18 +204,21 @@ export function pageDossier(
 <p>${echapper(dossier.intitule)}</p>
 ${pieces.numeroConvention ? `<p>Convention ${echapper(pieces.numeroConvention)}</p>` : ""}
 <h2>Pièces</h2>
-<ul>
-${elementPiece(dossier.id, "analyse", libelleModele("analyse"), pieces.modeles.includes("analyse"))}
-${elementPiece(dossier.id, "devis", pieces.devis ? `Devis ${numeroDevis(pieces.devis.annee, pieces.devis.numero)}` : "Devis", pieces.devis !== null)}
-${elementPiece(dossier.id, "positionnement", libelleModele("positionnement"), pieces.modeles.includes("positionnement"))}
-${elementPiece(dossier.id, "convention", "Convention", pieces.convention)}
-${elementPiece(dossier.id, "programme", "Programme", pieces.programme)}
-${elementPiece(dossier.id, "reglement", libelleModele("reglement"), pieces.modeles.includes("reglement"))}
-${elementPiece(dossier.id, "convocation", libelleModele("convocation"), pieces.modeles.includes("convocation"))}
-${elementPiece(dossier.id, "emargement", libelleModele("emargement"), pieces.modeles.includes("emargement"))}
-${elementPiece(dossier.id, "suivi", libelleModele("suivi"), pieces.modeles.includes("suivi"))}
-${elementPiece(dossier.id, "qcm", libelleModele("qcm"), pieces.modeles.includes("qcm"))}
-</ul>
+<h3>Avant le début</h3>
+${blocPiece(dossier.id, "devis", pieces.devis ? `Devis ${numeroDevis(pieces.devis.annee, pieces.devis.numero)}` : "Devis", "À faire signer (bon pour accord), puis à envoyer.", pieces.devis !== null)}
+${blocPiece(dossier.id, "analyse", libelleModele("analyse"), "Le stagiaire la complète et la renvoie.", pieces.modeles.includes("analyse"))}
+${blocPiece(dossier.id, "positionnement", libelleModele("positionnement"), "À envoyer avant la convocation. Le stagiaire la remplit et la renvoie.", pieces.modeles.includes("positionnement"))}
+${blocPiece(dossier.id, "convention", "Convention", "À faire signer par l'organisme et par l'entreprise. Le scan signé revient.", pieces.convention)}
+${blocPiece(dossier.id, "programme", "Programme", "À joindre à la convention.", pieces.programme)}
+${blocPiece(dossier.id, "reglement", libelleModele("reglement"), "À faire signer avant d'envoyer la convocation.", pieces.modeles.includes("reglement"))}
+${blocPiece(dossier.id, "convocation", libelleModele("convocation"), "À envoyer avant le premier jour, une fois le positionnement et l'accusé du règlement revenus.", pieces.modeles.includes("convocation"))}
+<h3>Pendant la formation</h3>
+${blocPiece(dossier.id, "emargement", libelleModele("emargement"), "À faire signer à chaque séance de coaching.", pieces.modeles.includes("emargement"))}
+${dossier.heures_elearning > 0 ? blocPiece(dossier.id, "suivi", libelleModele("suivi"), "À tenir au fil des modules à distance.", pieces.modeles.includes("suivi")) : ""}
+<h3>Après la formation</h3>
+${blocPiece(dossier.id, "qcm", libelleModele("qcm"), "Le stagiaire y répond à la fin.", pieces.modeles.includes("qcm"))}
+${blocPiece(dossier.id, "attestation", "Attestation", dossier.heures_elearning > 0 ? "Elle part quand l'émargement, le suivi et l'évaluation sont revenus." : "Elle part quand l'émargement et l'évaluation sont revenus.", false)}
+${blocPiece(dossier.id, "facture", "Facture", "Elle part après l'attestation. La facture acquittée part une fois payée.", false)}
 <section class="fiche">
 <dl>
 ${ligne("Entreprise", dossier.entreprise)}
@@ -232,9 +240,11 @@ function libelleModele(code: string): string {
   return MODELES.find(([valeur]) => valeur === code)?.[1] ?? code;
 }
 
-function elementPiece(id: string, code: string, libelle: string, present: boolean): string {
-  if (!present) return "";
-  return `<li>${echapper(libelle)} <a href="/dossiers/${echapper(id)}/${code}">Télécharger</a></li>`;
+function blocPiece(id: string, code: string, libelle: string, geste: string, present: boolean): string {
+  const liens = present
+    ? `<p class="liens"><a href="/dossiers/${echapper(id)}/${code}/apercu" target="_blank" rel="noopener">Aperçu</a><a href="/dossiers/${echapper(id)}/${code}">Télécharger</a></p>`
+    : "";
+  return `<div class="piece"><p><strong>${echapper(libelle)}</strong></p><p class="geste">${echapper(geste)}</p>${liens}</div>`;
 }
 
 function tableau(dossiers: readonly DossierVue[]): string {
