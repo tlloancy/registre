@@ -244,7 +244,7 @@ Module 1 Fondamentaux`),
     expect(html).toContain("Avant le début");
     expect(html).toContain("Pendant la formation");
     expect(html).toContain("Après la formation");
-    expect(html).toContain("À faire signer");
+    expect(html).toContain("À signer");
     const devis = await repondre(demande("GET", `/dossiers/${id}/devis`, cookies), env());
     expect(devis.status).toBe(200);
     expect(devis.headers.get("Content-Type")).toBe("application/pdf");

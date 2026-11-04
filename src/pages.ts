@@ -29,21 +29,22 @@ export type DossierVue = {
 
 export const FEUILLE = `
 body { margin: 0; color: #1c1c1c; background: #f6f5f3; font-family: "Segoe UI", system-ui, sans-serif; }
-main { max-width: 52rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
-h1 { font-size: 1.6rem; font-weight: 650; margin: 0; }
-h2 { font-size: 1.15rem; margin: 1.6rem 0 0.6rem; }
-h3 { font-size: 1rem; font-weight: 650; margin: 1.3rem 0 0.2rem; }
-p { line-height: 1.4; }
+main { max-width: 52rem; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; }
+h1 { font-size: 1.45rem; font-weight: 650; margin: 0; }
+h2 { font-size: 1.05rem; margin: 1.25rem 0 0.45rem; }
+p { line-height: 1.35; margin: 0.35rem 0; }
 a { color: inherit; }
-.piece { margin: 0.85rem 0 0; }
-.geste { color: #4d4a45; margin: 0.15rem 0 0; }
-.liens a { margin-right: 1rem; }
+.geste { color: #4d4a45; }
+.meta { color: #4d4a45; }
+table.pieces td.liens { text-align: right; white-space: nowrap; }
+table.pieces td.liens a { display: inline-block; margin-left: 0.35rem; padding: 0.12rem 0.4rem; border: 1px solid #b9b4ac; text-decoration: none; background: #fff; }
+tr.moment th { background: #efece6; }
 ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
 li { margin: 0.35rem 0; }
 .barre { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .barre form { margin: 0; }
-.fiche, form.bloc { background: #fff; border: 1px solid #d9d6d0; padding: 1rem 1.1rem 1.2rem; }
-dl { display: grid; grid-template-columns: 8rem 1fr; gap: 0.35rem 0.8rem; margin: 0; }
+.fiche, form.bloc { background: #fff; border: 1px solid #d9d6d0; padding: 0.75rem 0.9rem; }
+dl { display: grid; grid-template-columns: 7rem 1fr 7rem 1fr; gap: 0.28rem 0.7rem; margin: 0; }
 dt { color: #4d4a45; }
 dd { margin: 0; }
 label { display: block; margin-top: 0.85rem; }
@@ -55,7 +56,8 @@ button.secondaire { margin: 0; background: #fff; color: #1c1c1c; }
 .erreur { color: #8a1f1f; }
 .table { overflow-x: auto; background: #fff; border: 1px solid #d9d6d0; }
 table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 0.45rem 0.55rem; border-bottom: 1px solid #e4e0d8; vertical-align: top; }
+th, td { text-align: left; padding: 0.32rem 0.5rem; border-bottom: 1px solid #e4e0d8; vertical-align: middle; }
+summary { cursor: pointer; margin-top: 1rem; }
 @media (max-width: 40rem) { .deux, dl { grid-template-columns: 1fr; } }
 `.trim();
 
@@ -202,25 +204,41 @@ export function pageDossier(
 <button class="secondaire" type="submit">Fermer l'accès</button>
 </form>
 </div>
-<p><a href="/">Tous les dossiers</a> · <a href="/#audit">Pour l'audit</a></p>
+<p class="meta"><a href="/">Dossiers</a> · <a href="/#audit">Pour l'audit</a>${pieces.numeroConvention ? ` · Convention ${echapper(pieces.numeroConvention)}` : ""}</p>
 <p>${echapper(dossier.intitule)}</p>
-${pieces.numeroConvention ? `<p>Convention ${echapper(pieces.numeroConvention)}</p>` : ""}
+<p class="meta">${[dossier.entreprise, periode(dossier.date_debut, dossier.date_fin), `${dossier.heures_total} h`, afficherEuros(dossier.prix_ht_centimes) + " HT"].filter(Boolean).map((valeur) => echapper(valeur)).join(" · ")}</p>
 <h2>Pièces</h2>
-<h3>Avant le début</h3>
-${blocPiece(dossier.id, "devis", pieces.devis ? `Devis ${numeroDevis(pieces.devis.annee, pieces.devis.numero)}` : "Devis", "À faire signer (bon pour accord), puis à envoyer.", pieces.devis !== null)}
-${blocPiece(dossier.id, "analyse", libelleModele("analyse"), "Le stagiaire la complète et la renvoie.", pieces.modeles.includes("analyse"))}
-${blocPiece(dossier.id, "positionnement", libelleModele("positionnement"), "À envoyer avant la convocation. Le stagiaire la remplit et la renvoie.", pieces.modeles.includes("positionnement"))}
-${blocPiece(dossier.id, "convention", "Convention", "À faire signer par l'organisme et par l'entreprise. Le scan signé revient.", pieces.convention)}
-${blocPiece(dossier.id, "programme", "Programme", "À joindre à la convention.", pieces.programme)}
-${blocPiece(dossier.id, "reglement", libelleModele("reglement"), "À faire signer avant d'envoyer la convocation.", pieces.modeles.includes("reglement"))}
-${blocPiece(dossier.id, "convocation", libelleModele("convocation"), "À envoyer avant le premier jour, une fois le positionnement et l'accusé du règlement revenus.", pieces.modeles.includes("convocation"))}
-<h3>Pendant la formation</h3>
-${blocPiece(dossier.id, "emargement", libelleModele("emargement"), "À faire signer à chaque séance de coaching.", pieces.modeles.includes("emargement"))}
-${dossier.heures_elearning > 0 ? blocPiece(dossier.id, "suivi", libelleModele("suivi"), "À tenir au fil des modules à distance.", pieces.modeles.includes("suivi")) : ""}
-<h3>Après la formation</h3>
-${blocPiece(dossier.id, "qcm", libelleModele("qcm"), "Le stagiaire y répond à la fin.", pieces.modeles.includes("qcm"))}
-${blocPiece(dossier.id, "attestation", "Attestation", dossier.heures_elearning > 0 ? "Elle part quand l'émargement, le suivi et l'évaluation sont revenus." : "Elle part quand l'émargement et l'évaluation sont revenus.", false)}
-${blocPiece(dossier.id, "facture", "Facture", "Elle part après l'attestation. La facture acquittée part une fois payée.", false)}
+${tableauPieces([
+  {
+    titre: "Avant le début",
+    lignes: [
+      lignePiece(dossier.id, "devis", pieces.devis ? `Devis ${numeroDevis(pieces.devis.annee, pieces.devis.numero)}` : "Devis", "À signer", pieces.devis !== null),
+      lignePiece(dossier.id, "analyse", libelleModele("analyse"), "À renvoyer", pieces.modeles.includes("analyse")),
+      lignePiece(dossier.id, "positionnement", libelleModele("positionnement"), "À renvoyer", pieces.modeles.includes("positionnement")),
+      lignePiece(dossier.id, "convention", "Convention", "À signer", pieces.convention),
+      lignePiece(dossier.id, "programme", "Programme", "Avec la convention", pieces.programme),
+      lignePiece(dossier.id, "reglement", libelleModele("reglement"), "À signer", pieces.modeles.includes("reglement")),
+      lignePiece(dossier.id, "convocation", libelleModele("convocation"), "Avant le premier jour", pieces.modeles.includes("convocation")),
+    ].join(""),
+  },
+  {
+    titre: "Pendant la formation",
+    lignes: [
+      lignePiece(dossier.id, "emargement", libelleModele("emargement"), "À signer, chaque séance", pieces.modeles.includes("emargement")),
+      dossier.heures_elearning > 0 ? lignePiece(dossier.id, "suivi", libelleModele("suivi"), "Heures des modules", pieces.modeles.includes("suivi")) : "",
+    ].join(""),
+  },
+  {
+    titre: "Après la formation",
+    lignes: [
+      lignePiece(dossier.id, "qcm", libelleModele("qcm"), "En fin de parcours", pieces.modeles.includes("qcm")),
+      lignePiece(dossier.id, "attestation", "Attestation", "Quand les retours sont là", false),
+      lignePiece(dossier.id, "facture", "Facture", "Après l'attestation", false),
+    ].join(""),
+  },
+])}
+<details>
+<summary>Identité</summary>
 <section class="fiche">
 <dl>
 ${ligne("Entreprise", dossier.entreprise)}
@@ -235,7 +253,9 @@ ${ligne("TVA", afficherTaux(dossier.tva_taux_bp))}
 ${ligne("Prix TTC", afficherEuros(ttc))}
 ${ligne("Statut", statut(dossier.statut))}
 </dl>
-</section>`);
+</section>
+</details>
+`);
 }
 
 function libelleModele(code: string): string {
@@ -243,24 +263,33 @@ function libelleModele(code: string): string {
 }
 
 function coinAudit(): string {
-  const blocs = DOCUMENTS_ORGANISME.map((document) =>
-    blocPresent(document.libelle, "", `/organisme/${document.code}/apercu`, `/organisme/${document.code}`),
+  const lignes = DOCUMENTS_ORGANISME.map((document) =>
+    ligneLien(document.libelle, "À présenter", `/organisme/${document.code}/apercu`, `/organisme/${document.code}`, true),
   ).join("");
   return `<h2 id="audit">Pour l'audit</h2>
 <p class="geste">À présenter à l'audit. Ils sont les mêmes pour tous les dossiers.</p>
-${blocs}`;
+${tableauPieces([{ titre: "Organisme", lignes }])}`;
 }
 
-function blocPiece(id: string, code: string, libelle: string, geste: string, present: boolean): string {
-  if (!present) {
-    return `<div class="piece"><p><strong>${echapper(libelle)}</strong></p><p class="geste">${echapper(geste)}</p></div>`;
-  }
-  return blocPresent(libelle, geste, `/dossiers/${id}/${code}/apercu`, `/dossiers/${id}/${code}`);
+function tableauPieces(groupes: readonly { titre: string; lignes: string }[]): string {
+  const corps = groupes
+    .map((groupe) => `<tr class="moment"><th colspan="3">${echapper(groupe.titre)}</th></tr>${groupe.lignes}`)
+    .join("");
+  return `<div class="table"><table class="pieces">
+<thead><tr><th>Pièce</th><th>À faire</th><th></th></tr></thead>
+<tbody>${corps}</tbody>
+</table></div>`;
 }
 
-function blocPresent(libelle: string, geste: string, apercu: string, fichier: string): string {
-  const phrase = geste ? `<p class="geste">${echapper(geste)}</p>` : "";
-  return `<div class="piece"><p><strong>${echapper(libelle)}</strong></p>${phrase}<p class="liens"><a href="${echapper(apercu)}" target="_blank" rel="noopener">Aperçu</a><a href="${echapper(fichier)}">Télécharger</a></p></div>`;
+function lignePiece(id: string, code: string, libelle: string, geste: string, present: boolean): string {
+  return ligneLien(libelle, geste, `/dossiers/${id}/${code}/apercu`, `/dossiers/${id}/${code}`, present);
+}
+
+function ligneLien(libelle: string, geste: string, apercu: string, fichier: string, present: boolean): string {
+  const liens = present
+    ? `<a href="${echapper(apercu)}" target="_blank" rel="noopener">Aperçu</a><a href="${echapper(fichier)}">Télécharger</a>`
+    : "";
+  return `<tr><td>${echapper(libelle)}</td><td class="geste">${echapper(geste)}</td><td class="liens">${liens}</td></tr>`;
 }
 
 function tableau(dossiers: readonly DossierVue[]): string {
