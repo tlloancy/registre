@@ -731,8 +731,13 @@ export async function lirePreuves(db: Preparer): Promise<Preuves> {
      FROM dossiers d
      WHERE d.statut != 'clos'`,
   );
-  const traces = new Map<string, string>();
-  for (const ligne of await lireTraces(db)) traces.set(ligne.code, ligne.creee_le);
+  const dates = new Map<string, string>();
+  for (const ligne of await plusieurs<{ code: string; pose_le: string }>(
+    db,
+    "SELECT code, MAX(pose_le) AS pose_le FROM versions_organisme GROUP BY code",
+  )) {
+    dates.set(ligne.code, ligne.pose_le);
+  }
   return {
     ouverts: Number(compte?.ouverts ?? 0),
     sansProgramme: Number(compte?.sans_programme ?? 0),
@@ -742,8 +747,47 @@ export async function lirePreuves(db: Preparer): Promise<Preuves> {
     sansMiseEnOeuvre: Number(compte?.sans_mise_en_oeuvre ?? 0),
     sansEvaluation: Number(compte?.sans_evaluation ?? 0),
     sansSuivi: Number(compte?.sans_suivi ?? 0),
-    traces,
+    dates,
   };
+}
+
+export type VersionOrganisme = {
+  code: string;
+  version: number;
+  pose_le: string;
+  sha256: string;
+  r2_cle: string;
+};
+
+export async function lireVersionsOrganisme(db: Preparer): Promise<VersionOrganisme[]> {
+  return plusieurs<VersionOrganisme>(
+    db,
+    "SELECT code, version, pose_le, sha256, r2_cle FROM versions_organisme ORDER BY code, version",
+  );
+}
+
+export async function ajouterVersionOrganisme(
+  db: Preparer,
+  entree: { id: string; code: string; poseLe: string; origine: "depot" | "produit"; sha256: string; taille: number; ip: string },
+): Promise<void> {
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO versions_organisme (id, code, version, pose_le, origine, sha256, r2_cle, taille_octets)
+         VALUES (
+           ?, ?,
+           (SELECT COALESCE(MAX(version), 0) + 1 FROM versions_organisme WHERE code = ?),
+           ?, ?, ?, ?, ?
+         )`,
+      )
+      .bind(entree.id, entree.code, entree.code, entree.poseLe, entree.origine, entree.sha256, `audit/${entree.sha256}`, entree.taille),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'version_organisme', 'versions_organisme', ?, ?)`,
+      )
+      .bind(entree.poseLe, entree.ip, entree.id, JSON.stringify({ code: entree.code, origine: entree.origine })),
+  ]);
 }
 
 async function une<T>(db: Preparer, requete: string, ...valeurs: unknown[]): Promise<T | null> {

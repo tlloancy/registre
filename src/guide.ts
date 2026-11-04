@@ -59,7 +59,7 @@ export type Preuves = {
   sansMiseEnOeuvre: number;
   sansEvaluation: number;
   sansSuivi: number;
-  traces: ReadonlyMap<string, string>;
+  dates: ReadonlyMap<string, string>;
 };
 
 export type LigneConformite = {
@@ -178,7 +178,7 @@ export function juger(indicateur: IndicateurGuide, preuves: Preuves, maintenant:
   }
   if (plat.includes("amelioration continue") || plat.includes("analyse des risques")) {
     const manques = [
-      noteManque(preuves, maintenant, "risques", "Aucune analyse des risques.", "La revue des risques a plus de 365 jours."),
+      noteManque(preuves, maintenant, "risques", "Aucune analyse des risques.", "La dernière version a plus de 365 jours."),
       noteManque(preuves, maintenant, "auto_evaluation", "Aucune auto-évaluation.", ""),
     ].filter(Boolean);
     return manques.length > 0 ? ligne("pas_tenu", manques.join(" ")) : ligne("tenu", "Tenu");
@@ -188,7 +188,7 @@ export function juger(indicateur: IndicateurGuide, preuves: Preuves, maintenant:
   return ligne("pas_tenu", "Pas de contrôle pour cet indicateur.");
 
   function note(code: CodeNote, vide: string, fabriquer: typeof ligne): LigneConformite {
-    const manque = noteManque(preuves, maintenant, code, vide, `La dernière note a plus de ${noteParCode(code)?.jours ?? 0} jours.`);
+    const manque = noteManque(preuves, maintenant, code, vide, `La dernière version a plus de ${noteParCode(code)?.jours ?? 0} jours.`);
     return manque ? fabriquer("pas_tenu", manque) : fabriquer("tenu", "Tenu");
   }
 }
@@ -248,13 +248,16 @@ export function serialiserReleve(version: string, indicateurs: readonly Indicate
   return JSON.stringify({ version, indicateurs });
 }
 
-export type VueNote = {
+export type VersionVue = { version: number; poseLe: string };
+
+export type VuePiece = {
   code: string;
   libelle: string;
-  geste: string;
-  creeeLe: string | null;
+  periode: string;
+  courante: VersionVue | null;
   fraiche: boolean;
-  extrait: string;
+  anterieures: VersionVue[];
+  produit: boolean;
 };
 
 export type VueGuide = {
@@ -264,13 +267,13 @@ export type VueGuide = {
   erreur: string;
   aLire: boolean;
   lignes: LigneConformite[];
-  notes: VueNote[];
+  pieces: VuePiece[];
 };
 
 export function presenterGuide(
   norme: { hash: string | null; hashLu: string | null; verifieLe: string | null; erreur: string; releve: string } | null,
   preuves: Preuves,
-  textes: ReadonlyMap<string, { creeeLe: string; texte: string }>,
+  versions: readonly { code: string; version: number; poseLe: string }[],
   maintenant: Date,
 ): VueGuide {
   const releve = releveDepuis(norme?.releve ?? "");
@@ -286,26 +289,41 @@ export function presenterGuide(
     verdict,
     version: releve.version,
     verifieLe: norme?.verifieLe ?? null,
-    erreur: lignes.length === 0 ? "" : (norme?.erreur ?? ""),
+    erreur: "",
     aLire: Boolean(norme?.hash && norme.hash !== norme.hashLu),
     lignes,
-    notes: NOTES.map((note) => {
-      const trace = textes.get(note.code);
-      const instant = trace ? Date.parse(trace.creeeLe) : Number.NaN;
+    pieces: NOTES.map((note) => {
+      const suite = versions
+        .filter((version) => version.code === note.code)
+        .sort((a, b) => a.version - b.version);
+      const courante = suite.at(-1) ?? null;
+      const instant = courante ? Date.parse(courante.poseLe) : Number.NaN;
       const fraiche =
-        trace !== undefined &&
+        courante !== null &&
         !Number.isNaN(instant) &&
         (note.jours === null || maintenant.getTime() - instant <= note.jours * 86_400_000);
       return {
         code: note.code,
         libelle: note.libelle,
-        geste: note.jours === 90 ? "Sous 90 jours" : note.jours === 365 ? "Sous 365 jours" : "Note datée",
-        creeeLe: trace?.creeeLe ?? null,
+        periode: note.jours === 90 ? "Sous 90 jours" : note.jours === 365 ? "Sous 365 jours" : "À tenir à jour",
+        courante,
         fraiche,
-        extrait: raccourcir(trace?.texte.replace(/\s+/g, " ").trim() ?? ""),
+        anterieures: suite.slice(0, -1),
+        produit: note.code === "auto_evaluation",
       };
     }),
   };
+}
+
+export function texteAutoEvaluation(nom: string, versionGuide: string, lignes: readonly LigneConformite[], jour: string): string | null {
+  if (lignes.length === 0) return null;
+  const corps = lignes
+    .map((ligne) => {
+      const etat = ligne.statut === "tenu" ? "Tenu" : ligne.statut === "hors" ? "Hors champ" : "Pas tenu";
+      return `${ligne.numero}. ${ligne.titre}\n${etat}. ${ligne.detail}`;
+    })
+    .join("\n\n");
+  return [`Auto-évaluation`, nom, jour, versionGuide, "", corps].filter((ligne) => ligne !== "").join("\n");
 }
 
 function zoneSommaire(texte: string): string {
@@ -316,7 +334,7 @@ function zoneSommaire(texte: string): string {
 }
 
 function noteManque(preuves: Preuves, maintenant: Date, code: string, vide: string, ancien: string): string {
-  const iso = preuves.traces.get(code);
+  const iso = preuves.dates.get(code);
   if (!iso) return vide;
   const jours = noteParCode(code)?.jours;
   if (jours === null || jours === undefined) return "";

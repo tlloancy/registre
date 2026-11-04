@@ -61,6 +61,7 @@ th, td { text-align: left; padding: 0.32rem 0.5rem; border-bottom: 1px solid #e4
 summary { cursor: pointer; margin-top: 1rem; }
 td form { display: flex; gap: 0.35rem; align-items: center; margin: 0; }
 td form input { margin: 0; min-width: 8rem; }
+td form input[type="file"] { width: auto; max-width: 11rem; min-width: 0; }
 td form button { margin: 0; white-space: nowrap; }
 @media (max-width: 40rem) { .deux, dl { grid-template-columns: 1fr; } }
 `.trim();
@@ -277,11 +278,18 @@ function coinAudit(guide: VueGuide, csrf: string): string {
       return `<tr><td>${ligne.numero} · ${echapper(ligne.titre)}</td><td class="geste">${echapper(ligne.detail)}</td><td>${etat}</td></tr>`;
     })
     .join("");
-  const notes = guide.notes
-    .map((note) => {
-      const etat = !note.creeeLe ? "Aucune" : note.fraiche ? instantParis(note.creeeLe) : `${instantParis(note.creeeLe)}, à refaire`;
-      const extrait = note.extrait ? `<br><span class="meta">${echapper(note.extrait)}</span>` : "";
-      return `<tr><td>${echapper(note.libelle)}${extrait}</td><td class="geste">${echapper(note.geste)} · ${echapper(etat)}</td><td class="liens">${formulaireNote(csrf, note.code)}</td></tr>`;
+  const pieces = guide.pieces
+    .map((piece) => {
+      const version = piece.courante
+        ? `v${piece.courante.version} · ${instantParis(piece.courante.poseLe)}${piece.fraiche ? "" : ", à refaire"}`
+        : "Aucune version";
+      const anciennes = piece.anterieures
+        .map(
+          (ancienne) =>
+            `<a href="/audit/${echapper(piece.code)}/${ancienne.version}">v${ancienne.version}</a>`,
+        )
+        .join(" ");
+      return `<tr><td>${echapper(piece.libelle)}</td><td class="geste">${echapper(piece.periode)} · ${echapper(version)}${anciennes ? `<br>${anciennes}` : ""}</td><td class="liens">${liensPiece(csrf, piece)}</td></tr>`;
     })
     .join("");
   const verifie = guide.verifieLe ? `Vérifié le ${instantParis(guide.verifieLe)}` : "";
@@ -293,7 +301,7 @@ ${guide.erreur ? `<p class="erreur">${echapper(guide.erreur)}</p>` : ""}
 ${guide.aLire ? formulaireLu(csrf) : ""}
 ${indicateurs ? tableauPieces([{ titre: "Guide de lecture", lignes: indicateurs }]) : ""}
 <h2>À tenir</h2>
-${tableauPieces([{ titre: "Organisme", lignes: notes }])}
+${tableauPieces([{ titre: "Organisme", lignes: pieces }])}
 <h2>Documents</h2>
 ${tableauPieces([{ titre: "Publiés", lignes: documents }])}`;
 }
@@ -305,16 +313,18 @@ function formulaireLu(csrf: string): string {
 <label>Ce que tu en fais
 <input name="note" required maxlength="2000">
 </label>
-<button type="submit">Noter comme lu</button>
+<button type="submit">C'est lu</button>
 </form>`;
 }
 
-function formulaireNote(csrf: string, code: string): string {
-  return `<form method="post" action="/notes/${echapper(code)}">
-<input type="hidden" name="csrf" value="${echapper(csrf)}">
-<input name="texte" required maxlength="2000" aria-label="Note">
-<button type="submit">Noter</button>
-</form>`;
+function liensPiece(csrf: string, piece: VueGuide["pieces"][number]): string {
+  const fichier = piece.courante
+    ? `<a href="/audit/${echapper(piece.code)}/apercu" target="_blank" rel="noopener">Aperçu</a><a href="/audit/${echapper(piece.code)}">Télécharger</a>`
+    : "";
+  const produire = piece.produit
+    ? `<form method="post" action="/audit/${echapper(piece.code)}/produire"><input type="hidden" name="csrf" value="${echapper(csrf)}"><button type="submit">Produire</button></form>`
+    : "";
+  return `${fichier}<form method="post" action="/audit/${echapper(piece.code)}" enctype="multipart/form-data"><input type="hidden" name="csrf" value="${echapper(csrf)}"><input name="fichier" type="file" accept="application/pdf" required aria-label="Nouvelle version"><button type="submit">Déposer</button></form>${produire}`;
 }
 
 function instantParis(iso: string): string {

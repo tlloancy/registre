@@ -24,7 +24,7 @@ function preuves(partiel: Partial<Preuves> = {}): Preuves {
     sansMiseEnOeuvre: 0,
     sansEvaluation: 0,
     sansSuivi: 0,
-    traces: new Map(),
+    dates: new Map(),
     ...partiel,
   };
 }
@@ -95,13 +95,13 @@ Glossaire
   it("tient une veille datée de moins de 90 jours", () => {
     const ligne = juger(
       { numero: 23, titre: "Le prestataire réalise une veille légale et réglementaire." },
-      preuves({ traces: new Map([["veille_legale", "2026-10-01T00:00:00.000Z"]]) }),
+      preuves({ dates: new Map([["veille_legale", "2026-10-01T00:00:00.000Z"]]) }),
       MAINTENANT,
     );
     expect(ligne.statut).toBe("tenu");
     const vieille = juger(
       { numero: 23, titre: "Le prestataire réalise une veille légale et réglementaire." },
-      preuves({ traces: new Map([["veille_legale", "2026-01-01T00:00:00.000Z"]]) }),
+      preuves({ dates: new Map([["veille_legale", "2026-01-01T00:00:00.000Z"]]) }),
       MAINTENANT,
     );
     expect(vieille.statut).toBe("pas_tenu");
@@ -123,7 +123,7 @@ Glossaire
     const vue = presenterGuide(
       { hash: releve.hash, hashLu: null, verifieLe: MAINTENANT.toISOString(), erreur: "", releve: JSON.stringify({ version: releve.version, indicateurs: releve.indicateurs }) },
       preuves(),
-      new Map(),
+      [],
       MAINTENANT,
     );
     expect(vue.verdict.startsWith("Pas conforme")).toBe(true);

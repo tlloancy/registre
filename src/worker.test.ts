@@ -119,6 +119,9 @@ describe("accès", () => {
     expect(html).toContain("Référent handicap");
     expect(html).toContain("Auto-évaluation");
     expect(html).toContain("Le guide a changé.");
+    expect(html).toContain("Déposer");
+    expect(html).toContain("Produire");
+    expect(html).not.toContain(">Noter<");
     expect(html).not.toContain("travail-emploi.gouv.fr");
     expect(html).toContain("Certificat Qualiopi");
     expect(html).toContain("Catalogue des formations");
@@ -130,25 +133,28 @@ describe("accès", () => {
     expect(longue.status).toBe(303);
   });
 
-  it("compte une note handicap comme tenue", async () => {
+  it("versionne un dépôt et une production, sans écraser la précédente", async () => {
     const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
     const cookies = cookieEntete(ouverte);
     const accueil = await repondre(demande("GET", "/", cookies), env());
-    const note = await repondre(
-      demande("POST", "/notes/handicap", cookies, {
-        csrf: champCsrf(await accueil.text()),
-        texte: "Réseau du territoire contacté.",
-      }),
-      env(),
-    );
-    expect(note.status).toBe(303);
-    expect(note.headers.get("Location")).toBe("/#audit");
-    const suite = await repondre(demande("GET", "/", cookies), env());
-    const html = await suite.text();
-    expect(html).toContain("Réseau du territoire contacté.");
-    expect(html).toContain("Tenu");
-    expect(html).not.toContain("Aucun référent ni réseau handicap.");
-    expect(html).not.toContain("travail-emploi.gouv.fr");
+    const csrf = champCsrf(await accueil.text());
+    const premier = await deposerPdf(cookies, csrf, ecrirePdf("Veille du 4 novembre, version 1."), "/audit/veille_legale", "fichier");
+    expect(premier.status).toBe(303);
+    const deuxieme = await deposerPdf(cookies, csrf, ecrirePdf("Veille du 4 novembre, version 2, plus longue."), "/audit/veille_legale", "fichier");
+    expect(deuxieme.status).toBe(303);
+    const produit = await repondre(demande("POST", "/audit/auto_evaluation/produire", cookies, { csrf }), env());
+    expect(produit.status).toBe(303);
+    const html = await (await repondre(demande("GET", "/", cookies), env())).text();
+    expect(html).toContain("v1");
+    expect(html).toContain("v2");
+    expect(html).toContain("/audit/veille_legale/1");
+    expect(html).not.toContain("Aucune veille légale.");
+    expect(html).not.toContain("Aucune auto-évaluation.");
+    const v1 = await repondre(demande("GET", "/audit/veille_legale/1", cookies), env());
+    const v2 = await repondre(demande("GET", "/audit/veille_legale", cookies), env());
+    expect(v1.headers.get("Content-Disposition")).toContain("veille_legale-v1.pdf");
+    expect(v2.headers.get("Content-Disposition")).toContain("veille_legale-v2.pdf");
+    expect((await v1.arrayBuffer()).byteLength).not.toBe((await v2.arrayBuffer()).byteLength);
   });
 
   it("bloque au cinquième échec, puis accepte après le délai", async () => {
@@ -462,6 +468,7 @@ function ouvrirBase(): void {
   baseSql.exec(readFileSync(new URL("../migrations/0003_dossier_incomplet.sql", import.meta.url), "utf8"));
   baseSql.exec(readFileSync(new URL("../migrations/0004_documents_organisme.sql", import.meta.url), "utf8"));
   baseSql.exec(readFileSync(new URL("../migrations/0005_guide_releve.sql", import.meta.url), "utf8"));
+  baseSql.exec(readFileSync(new URL("../migrations/0006_versions_organisme.sql", import.meta.url), "utf8"));
   baseSql
     .prepare(
       `UPDATE reglages
@@ -506,12 +513,18 @@ function nombreDossiers(): number {
   return ligne.n;
 }
 
-async function deposerPdf(cookies: string, csrf: string, pdf: Uint8Array): Promise<Response> {
+async function deposerPdf(
+  cookies: string,
+  csrf: string,
+  pdf: Uint8Array,
+  chemin = "/dossiers",
+  champ = "convention",
+): Promise<Response> {
   const formulaire = new FormData();
   formulaire.set("csrf", csrf);
-  formulaire.set("convention", new File([pdf], "convention.pdf", { type: "application/pdf" }));
+  formulaire.set(champ, new File([pdf], "document.pdf", { type: "application/pdf" }));
   return repondre(
-    new Request(`${ORIGINE}/dossiers`, {
+    new Request(`${ORIGINE}${chemin}`, {
       method: "POST",
       headers: { Cookie: cookies, "CF-Connecting-IP": "203.0.113.8" },
       body: formulaire,
