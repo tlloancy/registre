@@ -12,7 +12,9 @@ import {
 } from "./cookies.ts";
 import {
   ecrireEchec,
+  enregistrerDocumentOrganisme,
   insererDossier,
+  lireDocumentOrganisme,
   lireCompteurGlobal,
   lireCompteurIp,
   cleRetour,
@@ -40,6 +42,7 @@ import { phraseCorrespond, validerPhrase } from "./mot-de-passe.ts";
 import { numeroDevis } from "./montants.ts";
 import { FEUILLE, pageAccueil, pageConnexion, pageDossier } from "./pages.ts";
 import { MODELES } from "./modeles.ts";
+import { chargerDocumentOrganisme, documentOrganisme } from "./organisme.ts";
 import { numeroConvention, produirePieces, type Stockage } from "./produire.ts";
 import { prouverPbkdf2 } from "./preuve.ts";
 
@@ -89,6 +92,10 @@ async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response
   if (requete.method === "POST" && url.pathname === "/sortie") return sortir(requete, env);
   if (requete.method === "POST" && url.pathname === "/dossiers") return creerDossier(requete, env);
   if (requete.method === "GET") {
+    const organisme = cheminOrganisme(url.pathname);
+    if (organisme) return servirOrganisme(requete, env, organisme.code, organisme.apercu);
+  }
+  if (requete.method === "GET") {
     const chemin = cheminDossier(url.pathname);
     if (chemin) {
       return chemin.piece
@@ -97,6 +104,54 @@ async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response
     }
   }
   return reponse(404, "Cette page n'existe pas.\n");
+}
+
+function cheminOrganisme(pathname: string): { code: string; apercu: boolean } | null {
+  const trouve = /^\/organisme\/([a-z]+)(?:\/(apercu))?$/.exec(pathname);
+  if (!trouve?.[1] || !documentOrganisme(trouve[1])) return null;
+  return { code: trouve[1], apercu: trouve[2] === "apercu" };
+}
+
+async function servirOrganisme(requete: Request, env: Env, code: string, apercu: boolean): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, session === undefined ? 401 : 200, session === undefined);
+  const document = documentOrganisme(code);
+  if (!document || !env.FICHIERS) return reponse(503, "Le stockage ne répond pas.\n");
+  let cle = await lireDocumentOrganisme(env.DB, code);
+  if (!cle) {
+    const octets = await chargerDocumentOrganisme(code);
+    if (!octets) return reponse(503, "Ce document n'a pas pu être pris.\n");
+    const sha256 = await empreinteOctets(octets);
+    cle = `organisme/${sha256}`;
+    try {
+      if (!(await env.FICHIERS.head(cle))) {
+        await env.FICHIERS.put(cle, octets, { httpMetadata: { contentType: "application/pdf" } });
+      }
+      await enregistrerDocumentOrganisme(env.DB, {
+        code,
+        libelle: document.libelle,
+        sha256,
+        taille: octets.byteLength,
+        poseLe: iso(heure(env)),
+      });
+    } catch {
+      cle = (await lireDocumentOrganisme(env.DB, code)) ?? cle;
+    }
+  }
+  try {
+    const objet = await env.FICHIERS.get(cle);
+    if (!objet) return reponse(404, "Ce document n'est pas là.\n");
+    const nom = `${code}.pdf`;
+    return reponseOctets(new Uint8Array(await objet.arrayBuffer()), "application/pdf", nom, apercu ? "inline" : "attachment");
+  } catch {
+    return reponse(503, "Le stockage ne répond pas.\n");
+  }
+}
+
+async function empreinteOctets(octets: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", octets.slice());
+  return [...new Uint8Array(digest)].map((octet) => octet.toString(16).padStart(2, "0")).join("");
 }
 
 const CODES_FICHIER = new Set<string>(["convention", "programme", "devis", ...MODELES.map(([code]) => code)]);

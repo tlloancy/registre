@@ -345,6 +345,28 @@ export async function insererDossier(
   ]);
 }
 
+export async function lireDocumentOrganisme(db: Preparer, code: string): Promise<string | null> {
+  const ligne = await une<{ r2_cle: string }>(
+    db,
+    "SELECT r2_cle FROM documents_organisme WHERE code = ?",
+    code,
+  );
+  return ligne?.r2_cle ?? null;
+}
+
+export async function enregistrerDocumentOrganisme(
+  db: Preparer,
+  entree: { code: string; libelle: string; sha256: string; taille: number; poseLe: string },
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO documents_organisme (code, libelle, sha256, r2_cle, taille_octets, pose_le)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(entree.code, entree.libelle, entree.sha256, `organisme/${entree.sha256}`, entree.taille, entree.poseLe)
+    .run();
+}
+
 export async function lireDossier(db: Preparer, id: string): Promise<DossierComplet | null> {
   return une<DossierComplet>(
     db,

@@ -107,6 +107,10 @@ describe("accès", () => {
     expect(html).toContain("Aucun dossier.");
     expect(html).toContain('type="file"');
     expect(html).toContain("Ouvrir le dossier");
+    expect(html).toContain("Pour l'audit");
+    expect(html).toContain("Certificat Qualiopi");
+    expect(html).toContain("Catalogue des formations");
+    expect(html).toContain("/organisme/certificat/apercu");
     expect(html).not.toContain(PHRASE);
     expect(audits()).not.toContain(PHRASE);
     const longue = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE, "B".repeat(600));
@@ -373,6 +377,7 @@ function ouvrirBase(): void {
   baseSql.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
   baseSql.exec(readFileSync(new URL("../migrations/0002_numero_tva.sql", import.meta.url), "utf8"));
   baseSql.exec(readFileSync(new URL("../migrations/0003_dossier_incomplet.sql", import.meta.url), "utf8"));
+  baseSql.exec(readFileSync(new URL("../migrations/0004_documents_organisme.sql", import.meta.url), "utf8"));
   baseSql
     .prepare(
       `UPDATE reglages

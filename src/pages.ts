@@ -1,5 +1,6 @@
 import type { SaisieDossier } from "./dossiers.ts";
 import { MODELES } from "./modeles.ts";
+import { DOCUMENTS_ORGANISME } from "./organisme.ts";
 import { afficherEuros, afficherJour, afficherTaux, numeroDevis, tvaCentimes } from "./montants.ts";
 
 export type Fiche = {
@@ -103,6 +104,7 @@ ${ligne("E-mail", fiche.email)}
 ${ligne("N° TVA", fiche.numero_tva)}
 </dl>
 </section>
+${coinAudit()}
 <h2>Dossiers</h2>
 ${tableau(dossiers)}
 <h2>Ouvrir un dossier</h2>
@@ -200,7 +202,7 @@ export function pageDossier(
 <button class="secondaire" type="submit">Fermer l'accès</button>
 </form>
 </div>
-<p><a href="/">Tous les dossiers</a></p>
+<p><a href="/">Tous les dossiers</a> · <a href="/#audit">Pour l'audit</a></p>
 <p>${echapper(dossier.intitule)}</p>
 ${pieces.numeroConvention ? `<p>Convention ${echapper(pieces.numeroConvention)}</p>` : ""}
 <h2>Pièces</h2>
@@ -240,11 +242,25 @@ function libelleModele(code: string): string {
   return MODELES.find(([valeur]) => valeur === code)?.[1] ?? code;
 }
 
+function coinAudit(): string {
+  const blocs = DOCUMENTS_ORGANISME.map((document) =>
+    blocPresent(document.libelle, "", `/organisme/${document.code}/apercu`, `/organisme/${document.code}`),
+  ).join("");
+  return `<h2 id="audit">Pour l'audit</h2>
+<p class="geste">À présenter à l'audit. Ils sont les mêmes pour tous les dossiers.</p>
+${blocs}`;
+}
+
 function blocPiece(id: string, code: string, libelle: string, geste: string, present: boolean): string {
-  const liens = present
-    ? `<p class="liens"><a href="/dossiers/${echapper(id)}/${code}/apercu" target="_blank" rel="noopener">Aperçu</a><a href="/dossiers/${echapper(id)}/${code}">Télécharger</a></p>`
-    : "";
-  return `<div class="piece"><p><strong>${echapper(libelle)}</strong></p><p class="geste">${echapper(geste)}</p>${liens}</div>`;
+  if (!present) {
+    return `<div class="piece"><p><strong>${echapper(libelle)}</strong></p><p class="geste">${echapper(geste)}</p></div>`;
+  }
+  return blocPresent(libelle, geste, `/dossiers/${id}/${code}/apercu`, `/dossiers/${id}/${code}`);
+}
+
+function blocPresent(libelle: string, geste: string, apercu: string, fichier: string): string {
+  const phrase = geste ? `<p class="geste">${echapper(geste)}</p>` : "";
+  return `<div class="piece"><p><strong>${echapper(libelle)}</strong></p>${phrase}<p class="liens"><a href="${echapper(apercu)}" target="_blank" rel="noopener">Aperçu</a><a href="${echapper(fichier)}">Télécharger</a></p></div>`;
 }
 
 function tableau(dossiers: readonly DossierVue[]): string {
