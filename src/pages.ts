@@ -1,4 +1,5 @@
 import type { SaisieDossier } from "./dossiers.ts";
+import type { VueGuide } from "./guide.ts";
 import { MODELES } from "./modeles.ts";
 import { DOCUMENTS_ORGANISME } from "./organisme.ts";
 import { afficherEuros, afficherJour, afficherTaux, numeroDevis, tvaCentimes } from "./montants.ts";
@@ -58,6 +59,9 @@ button.secondaire { margin: 0; background: #fff; color: #1c1c1c; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 0.32rem 0.5rem; border-bottom: 1px solid #e4e0d8; vertical-align: middle; }
 summary { cursor: pointer; margin-top: 1rem; }
+td form { display: flex; gap: 0.35rem; align-items: center; margin: 0; }
+td form input { margin: 0; min-width: 8rem; }
+td form button { margin: 0; white-space: nowrap; }
 @media (max-width: 40rem) { .deux, dl { grid-template-columns: 1fr; } }
 `.trim();
 
@@ -86,6 +90,7 @@ export function pageAccueil(
   erreur: string | null,
   saisie: SaisieDossier,
   reprise: Reprise | null = null,
+  guide: VueGuide | null = null,
 ): string {
   return document(`
 <div class="barre">
@@ -106,7 +111,7 @@ ${ligne("E-mail", fiche.email)}
 ${ligne("N° TVA", fiche.numero_tva)}
 </dl>
 </section>
-${coinAudit()}
+${guide ? coinAudit(guide, csrf) : ""}
 <h2>Dossiers</h2>
 ${tableau(dossiers)}
 <h2>Ouvrir un dossier</h2>
@@ -262,13 +267,60 @@ function libelleModele(code: string): string {
   return MODELES.find(([valeur]) => valeur === code)?.[1] ?? code;
 }
 
-function coinAudit(): string {
-  const lignes = DOCUMENTS_ORGANISME.map((document) =>
+function coinAudit(guide: VueGuide, csrf: string): string {
+  const documents = DOCUMENTS_ORGANISME.map((document) =>
     ligneLien(document.libelle, "À présenter", `/organisme/${document.code}/apercu`, `/organisme/${document.code}`, true),
   ).join("");
+  const indicateurs = guide.lignes
+    .map((ligne) => {
+      const etat = ligne.statut === "tenu" ? "Tenu" : ligne.statut === "hors" ? "Hors champ" : "Pas tenu";
+      return `<tr><td>${ligne.numero} · ${echapper(ligne.titre)}</td><td class="geste">${echapper(ligne.detail)}</td><td>${etat}</td></tr>`;
+    })
+    .join("");
+  const notes = guide.notes
+    .map((note) => {
+      const etat = !note.creeeLe ? "Aucune" : note.fraiche ? instantParis(note.creeeLe) : `${instantParis(note.creeeLe)}, à refaire`;
+      const extrait = note.extrait ? `<br><span class="meta">${echapper(note.extrait)}</span>` : "";
+      return `<tr><td>${echapper(note.libelle)}${extrait}</td><td class="geste">${echapper(note.geste)} · ${echapper(etat)}</td><td class="liens">${formulaireNote(csrf, note.code)}</td></tr>`;
+    })
+    .join("");
+  const verifie = guide.verifieLe ? `Vérifié le ${instantParis(guide.verifieLe)}` : "";
+  const entete = [guide.version, verifie].filter(Boolean).join(" · ");
   return `<h2 id="audit">Pour l'audit</h2>
-<p class="geste">À présenter à l'audit. Ils sont les mêmes pour tous les dossiers.</p>
-${tableauPieces([{ titre: "Organisme", lignes }])}`;
+<p>${echapper(guide.verdict)}</p>
+${entete ? `<p class="meta">${echapper(entete)}</p>` : ""}
+${guide.erreur ? `<p class="erreur">${echapper(guide.erreur)}</p>` : ""}
+${guide.aLire ? formulaireLu(csrf) : ""}
+${indicateurs ? tableauPieces([{ titre: "Guide de lecture", lignes: indicateurs }]) : ""}
+<h2>À tenir</h2>
+${tableauPieces([{ titre: "Organisme", lignes: notes }])}
+<h2>Documents</h2>
+${tableauPieces([{ titre: "Publiés", lignes: documents }])}`;
+}
+
+function formulaireLu(csrf: string): string {
+  return `<p>Le guide a changé.</p>
+<form class="bloc" method="post" action="/guide/lu">
+<input type="hidden" name="csrf" value="${echapper(csrf)}">
+<label>Ce que tu en fais
+<input name="note" required maxlength="2000">
+</label>
+<button type="submit">Noter comme lu</button>
+</form>`;
+}
+
+function formulaireNote(csrf: string, code: string): string {
+  return `<form method="post" action="/notes/${echapper(code)}">
+<input type="hidden" name="csrf" value="${echapper(csrf)}">
+<input name="texte" required maxlength="2000" aria-label="Note">
+<button type="submit">Noter</button>
+</form>`;
+}
+
+function instantParis(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("fr-FR", { timeZone: "Europe/Paris", dateStyle: "long" }).format(date);
 }
 
 function tableauPieces(groupes: readonly { titre: string; lignes: string }[]): string {

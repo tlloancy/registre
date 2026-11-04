@@ -11,7 +11,9 @@ import {
   nouveauJeton,
 } from "./cookies.ts";
 import {
+  ajouterTrace,
   ecrireEchec,
+  ecrireNorme,
   enregistrerDocumentOrganisme,
   insererDossier,
   lireDocumentOrganisme,
@@ -21,14 +23,19 @@ import {
   lireDossier,
   lireEtatPieces,
   lireHashMotDePasse,
+  lireNorme,
   lireOrganisme,
+  lirePreuves,
   lireSecret,
   lireSession,
   lireTailleDepot,
+  lireTraces,
   listerDossiers,
+  marquerGuideLu,
   ouvrirSession,
   supprimerSession,
   type Compteur,
+  type DossierLigne,
   type FichierConvention,
   type Preparer,
   type Secret,
@@ -36,10 +43,18 @@ import {
 import { lireConvention, pdfReconnu } from "./convention.ts";
 import { analyserDossier, saisieVide, type SaisieDossier } from "./dossiers.ts";
 import { textePdf } from "./pdf.ts";
-import type { Reprise } from "./pages.ts";
+import type { Fiche, Reprise } from "./pages.ts";
 import { entetes, reponse, reponseHtml, reponseOctets, redirection } from "./entetes.ts";
 import { phraseCorrespond, validerPhrase } from "./mot-de-passe.ts";
 import { numeroDevis } from "./montants.ts";
+import {
+  guidePerime,
+  noteParCode,
+  PAGE_GUIDE,
+  presenterGuide,
+  serialiserReleve,
+  telechargerGuide,
+} from "./guide.ts";
 import { FEUILLE, pageAccueil, pageConnexion, pageDossier } from "./pages.ts";
 import { MODELES } from "./modeles.ts";
 import { chargerDocumentOrganisme, documentOrganisme } from "./organisme.ts";
@@ -87,6 +102,10 @@ export async function repondre(requete: Request, env: Env): Promise<Response> {
 }
 
 async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response> {
+  if (requete.method === "POST" && url.pathname === "/guide/lu") return noterGuide(requete, env);
+  if (requete.method === "POST" && /^\/notes\/[a-z_]+$/.test(url.pathname)) {
+    return noterOrganisme(requete, env, url.pathname.slice("/notes/".length));
+  }
   if (requete.method === "GET" && url.pathname === "/") return accueilOuConnexion(requete, env);
   if (requete.method === "POST" && url.pathname === "/connexion") return connecter(requete, env);
   if (requete.method === "POST" && url.pathname === "/sortie") return sortir(requete, env);
@@ -238,7 +257,108 @@ async function accueilOuConnexion(requete: Request, env: Env): Promise<Response>
   if (!session) return formulaireConnexion(secret, null, 200, session === undefined);
   const fiche = await lireOrganisme(env.DB);
   const dossiers = await listerDossiers(env.DB);
-  return reponseHtml(200, pageAccueil(fiche, dossiers, session.csrf, null, saisieVide()));
+  return reponseHtml(200, await pageAvecGuide(env, fiche, dossiers, session.csrf, null, saisieVide()));
+}
+
+async function pageAvecGuide(
+  env: Env,
+  fiche: Fiche,
+  dossiers: readonly DossierLigne[],
+  csrf: string,
+  erreur: string | null,
+  saisie: SaisieDossier,
+  reprise: Reprise | null = null,
+): Promise<string> {
+  return pageAccueil(fiche, dossiers, csrf, erreur, saisie, reprise, await assurerGuide(env));
+}
+
+async function assurerGuide(env: Env) {
+  const maintenant = heure(env);
+  const quand = iso(maintenant);
+  let norme = await lireNorme(env.DB);
+  if (guidePerime(norme?.verifie_le ?? null, maintenant, norme?.etat ?? null)) {
+    const releve = await telechargerGuide();
+    const hash = releve.ok ? releve.hash : (norme?.hash ?? null);
+    await ecrireNorme(env.DB, {
+      url: releve.ok ? releve.url : norme?.url || PAGE_GUIDE,
+      etat: releve.ok ? (hash === (norme?.hash_lu ?? null) ? "inchange" : "change") : "echec",
+      hash,
+      verifieLe: quand,
+      erreur: releve.ok ? "" : releve.erreur,
+      releve: releve.ok ? serialiserReleve(releve.version, releve.indicateurs) : "",
+    });
+    norme = await lireNorme(env.DB);
+  }
+  const textes = new Map<string, { creeeLe: string; texte: string }>();
+  for (const trace of await lireTraces(env.DB)) textes.set(trace.code, { creeeLe: trace.creee_le, texte: trace.texte });
+  return presenterGuide(
+    norme
+      ? {
+          hash: norme.hash,
+          hashLu: norme.hash_lu,
+          verifieLe: norme.verifie_le,
+          erreur: norme.erreur,
+          releve: norme.releve,
+        }
+      : null,
+    await lirePreuves(env.DB),
+    textes,
+    maintenant,
+  );
+}
+
+async function noterGuide(requete: Request, env: Env): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, 401, true);
+  return enregistrerTexte(requete, env, session.csrf, "note", async (texte) => {
+    const ok = await marquerGuideLu(env.DB, { note: texte, quand: iso(heure(env)), ip: adresseIp(requete) });
+    return ok;
+  });
+}
+
+async function noterOrganisme(requete: Request, env: Env, code: string): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, 401, true);
+  if (!noteParCode(code)) return reponse(404, "Cette page n'existe pas.\n");
+  return enregistrerTexte(requete, env, session.csrf, "texte", async (texte) => {
+    await ajouterTrace(env.DB, {
+      id: crypto.randomUUID(),
+      code,
+      texte,
+      creeeLe: iso(heure(env)),
+      ip: adresseIp(requete),
+    });
+    return true;
+  });
+}
+
+async function enregistrerTexte(
+  requete: Request,
+  env: Env,
+  csrf: string,
+  champ: string,
+  ecrire: (texte: string) => Promise<boolean>,
+): Promise<Response> {
+  const formulaire = await lireFormulaire(requete);
+  const fiche = await lireOrganisme(env.DB);
+  const dossiers = await listerDossiers(env.DB);
+  if (!formulaire || !memesJetons(csrf, brut(formulaire.get("csrf")))) {
+    return reponseHtml(403, await pageAvecGuide(env, fiche, dossiers, csrf, "La page a expiré. Recharge-la.", saisieVide()));
+  }
+  const texte = brut(formulaire.get(champ)).trim();
+  const longueur = [...texte].length;
+  if (longueur === 0) {
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, "La note est vide.", saisieVide()));
+  }
+  if (longueur > 2000) {
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, "La note est trop longue.", saisieVide()));
+  }
+  if (!(await ecrire(texte))) {
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, "Le guide n'est pas là.", saisieVide()));
+  }
+  return redirection("/#audit");
 }
 
 async function connecter(requete: Request, env: Env): Promise<Response> {
@@ -297,7 +417,7 @@ async function sortir(requete: Request, env: Env): Promise<Response> {
   if (!formulaire || !memesJetons(session.csrf, brut(formulaire.get("csrf")))) {
     const fiche = await lireOrganisme(env.DB);
     const dossiers = await listerDossiers(env.DB);
-    return reponseHtml(403, pageAccueil(fiche, dossiers, session.csrf, "La page a expiré. Recharge-la.", saisieVide()));
+    return reponseHtml(403, await pageAvecGuide(env, fiche, dossiers, session.csrf, "La page a expiré. Recharge-la.", saisieVide()));
   }
   await supprimerSession(env.DB, session.hash, adresseIp(requete), iso(heure(env)));
   return redirection("/", [effacerCookie(NOM_SESSION), effacerCookie(NOM_CSRF)]);
@@ -312,12 +432,12 @@ async function creerDossier(requete: Request, env: Env): Promise<Response> {
   const fiche = await lireOrganisme(env.DB);
   const dossiers = await listerDossiers(env.DB);
   if (Number.isFinite(longueur) && longueur > tailleMax + 65_536) {
-    return reponseHtml(413, pageAccueil(fiche, dossiers, session.csrf, "La convention dépasse la taille admise.", saisieVide()));
+    return reponseHtml(413, await pageAvecGuide(env, fiche, dossiers, session.csrf, "La convention dépasse la taille admise.", saisieVide()));
   }
   const formulaire = await lireFormulaire(requete, tailleMax + 65_536);
   if (!formulaire) return reponse(400, "Le formulaire est illisible.\n");
   if (!memesJetons(session.csrf, brut(formulaire.get("csrf")))) {
-    return reponseHtml(403, pageAccueil(fiche, dossiers, session.csrf, "La page a expiré. Recharge-la.", saisieVide()));
+    return reponseHtml(403, await pageAvecGuide(env, fiche, dossiers, session.csrf, "La page a expiré. Recharge-la.", saisieVide()));
   }
 
   const fichier = formulaire.get("convention");
@@ -327,13 +447,13 @@ async function creerDossier(requete: Request, env: Env): Promise<Response> {
 
   const sha256 = brut(formulaire.get("sha256"));
   if (!/^[0-9a-f]{64}$/.test(sha256)) {
-    return reponseHtml(400, pageAccueil(fiche, dossiers, session.csrf, "La convention manque.", saisieVide()));
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, session.csrf, "La convention manque.", saisieVide()));
   }
   const analyse = analyserDossier(formulaire, crypto.randomUUID(), iso(heure(env)));
   if (!analyse.ok) {
     return reponseHtml(
       400,
-      pageAccueil(fiche, dossiers, session.csrf, analyse.raison, analyse.saisie, {
+      await pageAvecGuide(env, fiche, dossiers, session.csrf, analyse.raison, analyse.saisie, {
         sha256,
         numero: brut(formulaire.get("numero")).slice(0, 80),
         devis: brut(formulaire.get("devis")).slice(0, 80),
@@ -342,12 +462,12 @@ async function creerDossier(requete: Request, env: Env): Promise<Response> {
   }
   const pose = await deposer(env.FICHIERS, sha256, null);
   if (pose === "erreur" || pose === "absent" && !env.FICHIERS) {
-    return reponseHtml(503, pageAccueil(fiche, dossiers, session.csrf, "Le stockage ne répond pas.", saisieVide()));
+    return reponseHtml(503, await pageAvecGuide(env, fiche, dossiers, session.csrf, "Le stockage ne répond pas.", saisieVide()));
   }
   if (pose !== "present") {
     return reponseHtml(
       400,
-      pageAccueil(fiche, dossiers, session.csrf, "La convention n'est plus là. Dépose-la à nouveau.", saisieVide()),
+      await pageAvecGuide(env, fiche, dossiers, session.csrf, "La convention n'est plus là. Dépose-la à nouveau.", saisieVide()),
     );
   }
   return enregistrer(env, requete, analyse.dossier, analyse.saisie, session.csrf, fiche, dossiers, {
@@ -370,33 +490,33 @@ async function ouvrirDepuisFichier(
   tailleMax: number,
 ): Promise<Response> {
   if (fichier.size > tailleMax) {
-    return reponseHtml(413, pageAccueil(fiche, dossiers, csrf, "La convention dépasse la taille admise.", saisieVide()));
+    return reponseHtml(413, await pageAvecGuide(env, fiche, dossiers, csrf, "La convention dépasse la taille admise.", saisieVide()));
   }
   const octets = new Uint8Array(await fichier.arrayBuffer());
   if (!pdfReconnu(octets)) {
-    return reponseHtml(400, pageAccueil(fiche, dossiers, csrf, "Le fichier n'est pas un PDF.", saisieVide()));
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, "Le fichier n'est pas un PDF.", saisieVide()));
   }
   const sha256 = await empreinteFichier(octets.slice());
   let lecture: ReturnType<typeof lireConvention>;
   try {
     lecture = lireConvention(await textePdf(octets.slice()), fiche.email);
   } catch {
-    return reponseHtml(400, pageAccueil(fiche, dossiers, csrf, "Cette convention n'a pas pu être lue.", saisieVide()));
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, "Cette convention n'a pas pu être lue.", saisieVide()));
   }
   if (!lecture.saisie.stagiaire_nom && !lecture.saisie.intitule && !lecture.saisie.entreprise) {
-    return reponseHtml(400, pageAccueil(fiche, dossiers, csrf, "Cette convention n'a pas pu être lue.", saisieVide()));
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, "Cette convention n'a pas pu être lue.", saisieVide()));
   }
   const pose = await deposer(env.FICHIERS, sha256, octets.slice());
   if (pose === "absent" || pose === "erreur") {
-    return reponseHtml(503, pageAccueil(fiche, dossiers, csrf, "Le stockage ne répond pas.", saisieVide()));
+    return reponseHtml(503, await pageAvecGuide(env, fiche, dossiers, csrf, "Le stockage ne répond pas.", saisieVide()));
   }
   const reprise: Reprise = { sha256, numero: lecture.numero, devis: lecture.devis };
   if (lecture.raisons.length > 0) {
-    return reponseHtml(400, pageAccueil(fiche, dossiers, csrf, lecture.raisons.join(" "), lecture.saisie, reprise));
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, lecture.raisons.join(" "), lecture.saisie, reprise));
   }
   const analyse = analyserDossier(formulaireSaisie(lecture.saisie), crypto.randomUUID(), iso(heure(env)));
   if (!analyse.ok) {
-    return reponseHtml(400, pageAccueil(fiche, dossiers, csrf, analyse.raison, lecture.saisie, reprise));
+    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, analyse.raison, lecture.saisie, reprise));
   }
   return enregistrer(env, requete, analyse.dossier, analyse.saisie, csrf, fiche, dossiers, {
     sha256,
@@ -427,7 +547,7 @@ async function enregistrer(
   } catch {
     return reponseHtml(
       400,
-      pageAccueil(fiche, dossiers, csrf, "Le dossier n'a pas été enregistré.", saisie, {
+      await pageAvecGuide(env, fiche, dossiers, csrf, "Le dossier n'a pas été enregistré.", saisie, {
         sha256: fichier.sha256,
         numero: fichier.numero,
         devis: fichier.devis,

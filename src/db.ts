@@ -1,4 +1,5 @@
 import type { DossierPret } from "./dossiers.ts";
+import type { Preuves } from "./guide.ts";
 
 export type RequeteLiee = {
   first<T>(): Promise<T | null>;
@@ -599,6 +600,150 @@ export async function enregistrerDevis(
       )
       .bind(entree.maintenant, entree.ip, `${entree.annee}-${entree.numero}`, JSON.stringify({ annee: entree.annee, numero: entree.numero })),
   ]);
+}
+
+export type NormeLigne = {
+  etat: "inchange" | "change" | "echec";
+  hash: string | null;
+  verifie_le: string | null;
+  erreur: string;
+  hash_lu: string | null;
+  lu_le: string | null;
+  releve: string;
+  url: string;
+};
+
+export async function lireNorme(db: Preparer): Promise<NormeLigne | null> {
+  return une<NormeLigne>(
+    db,
+    `SELECT etat, hash, verifie_le, erreur, hash_lu, lu_le, releve, url
+       FROM normes_sources WHERE id = 'guide'`,
+  );
+}
+
+export async function ecrireNorme(
+  db: Preparer,
+  entree: { url: string; etat: string; hash: string | null; verifieLe: string; erreur: string; releve: string },
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO normes_sources (id, libelle, url, etat, hash, verifie_le, erreur, releve)
+       VALUES ('guide', 'Guide de lecture Qualiopi', ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         url = excluded.url,
+         etat = excluded.etat,
+         hash = excluded.hash,
+         verifie_le = excluded.verifie_le,
+         erreur = excluded.erreur,
+         releve = CASE WHEN excluded.releve = '' THEN normes_sources.releve ELSE excluded.releve END`,
+    )
+    .bind(entree.url, entree.etat, entree.hash, entree.verifieLe, entree.erreur, entree.releve)
+    .run();
+}
+
+export async function marquerGuideLu(
+  db: Preparer,
+  entree: { note: string; quand: string; ip: string },
+): Promise<boolean> {
+  const norme = await lireNorme(db);
+  if (!norme?.hash) return false;
+  await db.batch([
+    db
+      .prepare(
+        `UPDATE normes_sources
+            SET lu_le = ?, lu_note = ?, hash_lu = hash, etat = 'inchange'
+          WHERE id = 'guide' AND hash IS NOT NULL`,
+      )
+      .bind(entree.quand, entree.note),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'guide_lu', 'normes_sources', 'guide', ?)`,
+      )
+      .bind(entree.quand, entree.ip, JSON.stringify({ hash: norme.hash })),
+  ]);
+  return true;
+}
+
+export type TraceLigne = { code: string; creee_le: string; texte: string };
+
+export async function lireTraces(db: Preparer): Promise<TraceLigne[]> {
+  return plusieurs<TraceLigne>(db, "SELECT code, creee_le, texte FROM traces ORDER BY creee_le");
+}
+
+export async function ajouterTrace(
+  db: Preparer,
+  entree: { id: string; code: string; texte: string; creeeLe: string; ip: string },
+): Promise<void> {
+  await db.batch([
+    db
+      .prepare("INSERT INTO traces (id, code, creee_le, texte) VALUES (?, ?, ?, ?)")
+      .bind(entree.id, entree.code, entree.creeeLe, entree.texte),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'note_organisme', 'traces', ?, ?)`,
+      )
+      .bind(entree.creeeLe, entree.ip, entree.id, JSON.stringify({ code: entree.code })),
+  ]);
+}
+
+export async function lirePreuves(db: Preparer): Promise<Preuves> {
+  const compte = await une<{
+    ouverts: number;
+    sans_programme: number;
+    sans_analyse: number;
+    sans_positionnement: number;
+    sans_convocation: number;
+    sans_mise_en_oeuvre: number;
+    sans_evaluation: number;
+    sans_suivi: number;
+  }>(
+    db,
+    `SELECT
+       COUNT(*) AS ouverts,
+       COALESCE(SUM(CASE WHEN NOT EXISTS (
+         SELECT 1 FROM pieces p
+          WHERE p.dossier_id = d.id AND p.code = 'programme' AND p.statut != 'annulee'
+       ) THEN 1 ELSE 0 END), 0) AS sans_programme,
+       COALESCE(SUM(CASE WHEN NOT EXISTS (
+         SELECT 1 FROM retours r WHERE r.dossier_id = d.id AND r.type = 'analyse'
+       ) THEN 1 ELSE 0 END), 0) AS sans_analyse,
+       COALESCE(SUM(CASE WHEN NOT EXISTS (
+         SELECT 1 FROM retours r WHERE r.dossier_id = d.id AND r.type = 'positionnement'
+       ) THEN 1 ELSE 0 END), 0) AS sans_positionnement,
+       COALESCE(SUM(CASE WHEN NOT EXISTS (
+         SELECT 1 FROM pieces p
+          WHERE p.dossier_id = d.id AND p.code = 'convocation' AND p.statut IN ('envoyee', 'revenue')
+       ) THEN 1 ELSE 0 END), 0) AS sans_convocation,
+       COALESCE(SUM(CASE WHEN NOT EXISTS (
+         SELECT 1 FROM pieces p
+          WHERE p.dossier_id = d.id AND p.code = 'emargement' AND p.statut = 'revenue'
+       ) AND NOT EXISTS (
+         SELECT 1 FROM seances s WHERE s.dossier_id = d.id AND s.statut = 'tenue'
+       ) THEN 1 ELSE 0 END), 0) AS sans_mise_en_oeuvre,
+       COALESCE(SUM(CASE WHEN NOT EXISTS (
+         SELECT 1 FROM retours r WHERE r.dossier_id = d.id AND r.type = 'qcm_sortie'
+       ) THEN 1 ELSE 0 END), 0) AS sans_evaluation,
+       COALESCE(SUM(CASE WHEN d.heures_elearning > 0 AND NOT EXISTS (
+         SELECT 1 FROM retours r WHERE r.dossier_id = d.id AND r.type = 'suivi_elearning'
+       ) THEN 1 ELSE 0 END), 0) AS sans_suivi
+     FROM dossiers d
+     WHERE d.statut != 'clos'`,
+  );
+  const traces = new Map<string, string>();
+  for (const ligne of await lireTraces(db)) traces.set(ligne.code, ligne.creee_le);
+  return {
+    ouverts: Number(compte?.ouverts ?? 0),
+    sansProgramme: Number(compte?.sans_programme ?? 0),
+    sansAnalyse: Number(compte?.sans_analyse ?? 0),
+    sansPositionnement: Number(compte?.sans_positionnement ?? 0),
+    sansConvocation: Number(compte?.sans_convocation ?? 0),
+    sansMiseEnOeuvre: Number(compte?.sans_mise_en_oeuvre ?? 0),
+    sansEvaluation: Number(compte?.sans_evaluation ?? 0),
+    sansSuivi: Number(compte?.sans_suivi ?? 0),
+    traces,
+  };
 }
 
 async function une<T>(db: Preparer, requete: string, ...valeurs: unknown[]): Promise<T | null> {

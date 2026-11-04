@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ecrirePdf } from "./pdf-ecrit.ts";
 import { NOM_CSRF, NOM_SESSION } from "./cookies.ts";
 import type { Preparer, RequeteLiee } from "./db.ts";
 import { deriver } from "./mot-de-passe.ts";
@@ -59,15 +60,20 @@ describe("accès", () => {
     const empreinte = await deriver(PHRASE);
     selMotDePasse = empreinte.sel;
     hashMotDePasse = empreinte.hash;
+    pdfGuide = ecrirePdf(sommaireGuide());
   });
 
   beforeEach(() => {
     horloge = new Date("2026-11-03T18:00:00.000Z");
     fichiers = new MemoireFichiers();
     ouvrirBase();
+    globalThis.fetch = guideFetch;
   });
 
-  afterAll(() => baseSql?.close());
+  afterAll(() => {
+    baseSql?.close();
+    globalThis.fetch = fetchOriginal;
+  });
 
   it("affiche le formulaire et un jeton, sans session", async () => {
     const reponse = await repondre(demande("GET", "/"), env());
@@ -108,6 +114,12 @@ describe("accès", () => {
     expect(html).toContain('type="file"');
     expect(html).toContain("Ouvrir le dossier");
     expect(html).toContain("Pour l'audit");
+    expect(html).toContain("Pas conforme");
+    expect(html).toContain("Veille légale");
+    expect(html).toContain("Référent handicap");
+    expect(html).toContain("Auto-évaluation");
+    expect(html).toContain("Le guide a changé.");
+    expect(html).not.toContain("travail-emploi.gouv.fr");
     expect(html).toContain("Certificat Qualiopi");
     expect(html).toContain("Catalogue des formations");
     expect(html).toContain("/organisme/certificat/apercu");
@@ -116,6 +128,27 @@ describe("accès", () => {
     const longue = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE, "B".repeat(600));
     expect(agents()).toContain("B".repeat(512));
     expect(longue.status).toBe(303);
+  });
+
+  it("compte une note handicap comme tenue", async () => {
+    const ouverte = await envoyer(await jetonPage(await repondre(demande("GET", "/"), env())), PHRASE);
+    const cookies = cookieEntete(ouverte);
+    const accueil = await repondre(demande("GET", "/", cookies), env());
+    const note = await repondre(
+      demande("POST", "/notes/handicap", cookies, {
+        csrf: champCsrf(await accueil.text()),
+        texte: "Réseau du territoire contacté.",
+      }),
+      env(),
+    );
+    expect(note.status).toBe(303);
+    expect(note.headers.get("Location")).toBe("/#audit");
+    const suite = await repondre(demande("GET", "/", cookies), env());
+    const html = await suite.text();
+    expect(html).toContain("Réseau du territoire contacté.");
+    expect(html).toContain("Tenu");
+    expect(html).not.toContain("Aucun référent ni réseau handicap.");
+    expect(html).not.toContain("travail-emploi.gouv.fr");
   });
 
   it("bloque au cinquième échec, puis accepte après le délai", async () => {
@@ -365,6 +398,56 @@ function env(): Env {
   return { DB: adapter(dbCourante()), FICHIERS: fichiers, maintenant: () => instantCourant() };
 }
 
+const fetchOriginal = globalThis.fetch.bind(globalThis);
+let pdfGuide = new Uint8Array();
+
+function sommaireGuide(): string {
+  const phrase = (numero: number): string => {
+    if (numero === 1) return "Le prestataire diffuse une information accessible au public, détaillée et vérifiable.";
+    if (numero === 2) return "Le prestataire diffuse des indicateurs de résultats adaptés à la nature des prestations.";
+    if (numero === 4) return "Le prestataire analyse le besoin du bénéficiaire en lien avec l'entreprise.";
+    if (numero === 5) return "Le prestataire définit les objectifs opérationnels et évaluables de la prestation.";
+    if (numero === 6) return "Le prestataire établit les contenus et les modalités de mise en œuvre de la prestation.";
+    if (numero === 8) return "Le prestataire détermine les procédures de positionnement et d'évaluation des acquis.";
+    if (numero === 9) return "Le prestataire informe les publics bénéficiaires des conditions de déroulement de la prestation.";
+    if (numero === 10) return "Le prestataire met en œuvre et adapte la prestation, l'accompagnement et le suivi.";
+    if (numero === 11) return "Le prestataire évalue l'atteinte par les publics bénéficiaires des objectifs de la prestation.";
+    if (numero === 12) return "Le prestataire décrit et met en œuvre les mesures pour favoriser l'engagement des bénéficiaires.";
+    if (numero === 13) return "Pour les formations en alternance, le prestataire anticipe les missions confiées à l'apprenant.";
+    if (numero === 17) return "Le prestataire met à disposition les moyens humains et techniques adaptés.";
+    if (numero === 18) return "Le prestataire mobilise et coordonne les différents intervenants internes et externes.";
+    if (numero === 19) return "Le prestataire met à disposition du bénéficiaire des ressources pédagogiques et permet de se les approprier.";
+    if (numero === 21) return "Le prestataire détermine, mobilise et évalue les compétences des différents intervenants internes.";
+    if (numero === 22) return "Le prestataire entretient et développe les compétences de ses salariés, adaptées aux prestations.";
+    if (numero === 23) return "Le prestataire réalise une veille légale et réglementaire sur le champ de la formation professionnelle.";
+    if (numero === 24) return "Le prestataire réalise une veille sur les évolutions des compétences, des métiers et des emplois.";
+    if (numero === 25) return "Le prestataire réalise une veille sur les innovations pédagogiques et technologiques.";
+    if (numero === 26) return "Le prestataire mobilise les expertises nécessaires pour accueillir les publics en situation de handicap.";
+    if (numero === 30) return "Le prestataire recueille les appréciations des parties prenantes.";
+    if (numero === 31) return "Le prestataire traite les difficultés et les réclamations exprimées par les parties prenantes.";
+    if (numero === 32) return "Le prestataire met en œuvre des mesures d'amélioration continue et une analyse des risques.";
+    if (numero === 33) return "Le prestataire évalue les contenus par les apprentis, distinctement de la satisfaction.";
+    return `Le prestataire tient le point numéro ${numero} du référentiel qualité.`;
+  };
+  return ["V.10 – Novembre 2026", ...Array.from({ length: 33 }, (_, index) => `${index + 1}. ${phrase(index + 1)}`), "Glossaire"].join("\n");
+}
+
+function guideFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = String(input instanceof Request ? input.url : input);
+  if (url.includes("travail-emploi.gouv.fr") && url.toLowerCase().includes(".pdf")) {
+    return Promise.resolve(new Response(pdfGuide.slice(), { status: 200, headers: { "Content-Type": "application/pdf" } }));
+  }
+  if (url.includes("travail-emploi.gouv.fr")) {
+    return Promise.resolve(
+      new Response('<a href="https://travail-emploi.gouv.fr/files/guide-lecture-qualiopi.pdf">guide</a>', {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+  }
+  return fetchOriginal(input, init);
+}
+
 let baseSql: DatabaseSync | undefined;
 let horloge = new Date("2026-11-03T18:00:00.000Z");
 let selMotDePasse = "";
@@ -378,6 +461,7 @@ function ouvrirBase(): void {
   baseSql.exec(readFileSync(new URL("../migrations/0002_numero_tva.sql", import.meta.url), "utf8"));
   baseSql.exec(readFileSync(new URL("../migrations/0003_dossier_incomplet.sql", import.meta.url), "utf8"));
   baseSql.exec(readFileSync(new URL("../migrations/0004_documents_organisme.sql", import.meta.url), "utf8"));
+  baseSql.exec(readFileSync(new URL("../migrations/0005_guide_releve.sql", import.meta.url), "utf8"));
   baseSql
     .prepare(
       `UPDATE reglages
