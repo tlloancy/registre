@@ -7,6 +7,7 @@ import {
   lireCookie,
   memesJetons,
   NOM_CSRF,
+  NOM_INFO,
   NOM_SESSION,
   nouveauJeton,
 } from "./cookies.ts";
@@ -14,15 +15,20 @@ import {
   ajouterVersionOrganisme,
   ecrireEchec,
   ecrireNorme,
-  enregistrerDocumentOrganisme,
+  ajouterVersionPubliee,
+  deposerPieceDossier,
+  depotConnu,
+  lireSignesPieces,
+  lireVersionsPieces,
+  lireVersionsPubliees,
   insererDossier,
-  lireDocumentOrganisme,
   lireCompteurGlobal,
   lireCompteurIp,
-  cleRetour,
   lireDossier,
   lireEtatPieces,
+  lireEtatVerrous,
   lireHashMotDePasse,
+  lireMatiere,
   lireNorme,
   lireOrganisme,
   lirePreuves,
@@ -32,6 +38,8 @@ import {
   lireVersionsOrganisme,
   listerDossiers,
   marquerGuideLu,
+  noterEnvoi,
+  poserEmailStagiaire,
   ouvrirSession,
   supprimerSession,
   type Compteur,
@@ -49,19 +57,24 @@ import { phraseCorrespond, validerPhrase } from "./mot-de-passe.ts";
 import { numeroDevis } from "./montants.ts";
 import {
   guidePerime,
+  NOTES,
   noteParCode,
   PAGE_GUIDE,
+  conformite,
   presenterGuide,
   serialiserReleve,
   telechargerGuide,
-  texteAutoEvaluation,
+  texteExigence,
 } from "./guide.ts";
-import { ecrirePdf } from "./pdf-ecrit.ts";
-import { FEUILLE, pageAccueil, pageConnexion, pageDossier } from "./pages.ts";
-import { MODELES } from "./modeles.ts";
+import { htmlVersPdf, normaliserHtml } from "./html-pdf.ts";
+import { FEUILLE, pageAccueil, pageConnexion, pageDossier, SCRIPT } from "./pages.ts";
+import { MODELES, pieceProduite } from "./modeles.ts";
 import { chargerDocumentOrganisme, documentOrganisme } from "./organisme.ts";
-import { numeroConvention, produirePieces, type Stockage } from "./produire.ts";
+import { numeroConvention, produireModele, produirePieces, type Stockage } from "./produire.ts";
 import { prouverPbkdf2 } from "./preuve.ts";
+import { envoyerBrevo, type CourrierSortant } from "./brevo.ts";
+import { emailAdmissible, attenteCochee, catalogueCourrier, etiquetteEnvoi, inclureSiCochee, lettreCourrier, messagePage, momentConnu, retenirCible, selectionCourrier, titreMoment, type Moment } from "./courrier.ts";
+import { juger, type Etat } from "./verrous.ts";
 
 export type Fichiers = Stockage;
 
@@ -69,6 +82,8 @@ export type Env = {
   DB: Preparer;
   FICHIERS?: Fichiers;
   PREUVE?: string;
+  BREVO_API_KEY?: string;
+  envoyerCourrier?: (courrier: CourrierSortant) => Promise<boolean>;
   maintenant?: () => Date;
 };
 
@@ -86,6 +101,9 @@ export async function repondre(requete: Request, env: Env): Promise<Response> {
   }
   if (requete.method === "GET" && url.pathname === "/registre.css") {
     return new Response(FEUILLE, { status: 200, headers: entetes("text/css; charset=utf-8") });
+  }
+  if (requete.method === "GET" && url.pathname === "/registre.js") {
+    return new Response(SCRIPT, { status: 200, headers: entetes("text/javascript; charset=utf-8") });
   }
 
   let hash: string | null;
@@ -105,6 +123,7 @@ export async function repondre(requete: Request, env: Env): Promise<Response> {
 
 async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response> {
   if (requete.method === "POST" && url.pathname === "/guide/lu") return noterGuide(requete, env);
+  if (requete.method === "POST" && url.pathname === "/audit/produire") return produireAudit(requete, env, null);
   if (requete.method === "POST") {
     const produit = /^\/audit\/([a-z_]+)\/produire$/.exec(url.pathname);
     if (produit?.[1]) return produireAudit(requete, env, produit[1]);
@@ -119,61 +138,121 @@ async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response
   if (requete.method === "POST" && url.pathname === "/connexion") return connecter(requete, env);
   if (requete.method === "POST" && url.pathname === "/sortie") return sortir(requete, env);
   if (requete.method === "POST" && url.pathname === "/dossiers") return creerDossier(requete, env);
+  if (requete.method === "POST") {
+    const courrier = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/courrier$/.exec(url.pathname);
+    if (courrier?.[1]) return envoyerCourrierDossier(requete, env, courrier[1]);
+  }
+  if (requete.method === "POST") {
+    const courriel = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/email$/.exec(url.pathname);
+    if (courriel?.[1]) return poserEmail(requete, env, courriel[1]);
+  }
+  if (requete.method === "POST") {
+    const produit = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/([a-z]+)\/produire$/.exec(url.pathname);
+    if (produit?.[1] && produit[2]) return produirePiece(requete, env, produit[1], produit[2]);
+  }
+  if (requete.method === "POST") {
+    const piece = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/([a-z]+)$/.exec(url.pathname);
+    if (piece?.[1] && piece[2]) return deposerPiece(requete, env, piece[1], piece[2]);
+  }
+  if (requete.method === "POST") {
+    const reprendre = /^\/organisme\/([a-z]+)\/reprendre$/.exec(url.pathname);
+    if (reprendre?.[1]) return reprendreOrganisme(requete, env, reprendre[1]);
+  }
   if (requete.method === "GET") {
     const organisme = cheminOrganisme(url.pathname);
-    if (organisme) return servirOrganisme(requete, env, organisme.code, organisme.apercu);
+    if (organisme) return servirOrganisme(requete, env, organisme.code, organisme.version, organisme.apercu);
   }
   if (requete.method === "GET") {
     const chemin = cheminDossier(url.pathname);
     if (chemin) {
       return chemin.piece
-        ? telecharger(requete, env, chemin.id, chemin.piece, chemin.apercu)
+        ? telecharger(requete, env, chemin.id, chemin.piece, chemin.version, chemin.apercu, chemin.signe)
         : voirDossier(requete, env, chemin.id);
     }
   }
   return reponse(404, "Cette page n'existe pas.\n");
 }
 
-function cheminOrganisme(pathname: string): { code: string; apercu: boolean } | null {
-  const trouve = /^\/organisme\/([a-z]+)(?:\/(apercu))?$/.exec(pathname);
+function cheminOrganisme(pathname: string): { code: string; version: number | null; apercu: boolean } | null {
+  const trouve = /^\/organisme\/([a-z]+)(?:\/(\d+))?(?:\/(apercu))?$/.exec(pathname);
   if (!trouve?.[1] || !documentOrganisme(trouve[1])) return null;
-  return { code: trouve[1], apercu: trouve[2] === "apercu" };
+  return { code: trouve[1], version: trouve[2] ? Number(trouve[2]) : null, apercu: trouve[3] === "apercu" };
 }
 
-async function servirOrganisme(requete: Request, env: Env, code: string, apercu: boolean): Promise<Response> {
+async function servirOrganisme(
+  requete: Request,
+  env: Env,
+  code: string,
+  version: number | null,
+  apercu: boolean,
+): Promise<Response> {
   const secret = await exigerSecret(env);
   const session = await sessionOuverte(requete, env);
   if (!session) return formulaireConnexion(secret, null, session === undefined ? 401 : 200, session === undefined);
-  const document = documentOrganisme(code);
-  if (!document || !env.FICHIERS) return reponse(503, "Le stockage ne répond pas.\n");
-  let cle = await lireDocumentOrganisme(env.DB, code);
-  if (!cle) {
-    const octets = await chargerDocumentOrganisme(code);
-    if (!octets) return reponse(503, "Ce document n'a pas pu être pris.\n");
-    const sha256 = await empreinteOctets(octets);
-    cle = `organisme/${sha256}`;
-    try {
-      if (!(await env.FICHIERS.head(cle))) {
-        await env.FICHIERS.put(cle, octets, { httpMetadata: { contentType: "application/pdf" } });
-      }
-      await enregistrerDocumentOrganisme(env.DB, {
-        code,
-        libelle: document.libelle,
-        sha256,
-        taille: octets.byteLength,
-        poseLe: iso(heure(env)),
-      });
-    } catch {
-      cle = (await lireDocumentOrganisme(env.DB, code)) ?? cle;
-    }
+  if (!documentOrganisme(code) || !env.FICHIERS) return reponse(503, "Le stockage ne répond pas.\n");
+  let versions = (await lireVersionsPubliees(env.DB)).filter((ligne) => ligne.code === code);
+  if (versions.length === 0 && version === null) {
+    const posee = await poserPublie(env, requete, code);
+    if (posee) versions = (await lireVersionsPubliees(env.DB)).filter((ligne) => ligne.code === code);
   }
+  const cible = version === null ? versions.at(-1) : versions.find((ligne) => ligne.version === version);
+  if (!cible) return reponse(versions.length === 0 ? 503 : 404, versions.length === 0 ? "Ce document n'a pas pu être pris.\n" : "Ce document n'est pas là.\n");
   try {
-    const objet = await env.FICHIERS.get(cle);
+    const objet = await env.FICHIERS.get(cible.r2_cle);
     if (!objet) return reponse(404, "Ce document n'est pas là.\n");
-    const nom = `${code}.pdf`;
-    return reponseOctets(new Uint8Array(await objet.arrayBuffer()), "application/pdf", nom, apercu ? "inline" : "attachment");
+    return reponseOctets(
+      new Uint8Array(await objet.arrayBuffer()),
+      "application/pdf",
+      `${code}-v${cible.version}.pdf`,
+      apercu ? "inline" : "attachment",
+    );
   } catch {
     return reponse(503, "Le stockage ne répond pas.\n");
+  }
+}
+
+async function reprendreOrganisme(requete: Request, env: Env, code: string): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, 401, true);
+  if (!documentOrganisme(code)) return reponse(404, "Cette page n'existe pas.\n");
+  const formulaire = await lireFormulaire(requete);
+  const fiche = await lireOrganisme(env.DB);
+  const dossiers = await listerDossiers(env.DB);
+  if (!formulaire || !memesJetons(session.csrf, brut(formulaire.get("csrf")))) {
+    return reponseHtml(403, await pageAvecGuide(env, fiche, dossiers, session.csrf, "La page a expiré. Recharge-la.", saisieVide()));
+  }
+  const posee = await poserPublie(env, requete, code);
+  if (!posee) {
+    return reponseHtml(503, await pageAvecGuide(env, fiche, dossiers, session.csrf, "Ce document n'a pas pu être pris.", saisieVide()));
+  }
+  return redirection("/");
+}
+
+async function poserPublie(env: Env, requete: Request, code: string): Promise<boolean> {
+  if (!env.FICHIERS || !documentOrganisme(code)) return false;
+  const octets = await chargerDocumentOrganisme(code);
+  if (!octets) return false;
+  const sha256 = await empreinteOctets(octets);
+  const versions = (await lireVersionsPubliees(env.DB)).filter((ligne) => ligne.code === code);
+  if (versions.at(-1)?.sha256 === sha256) return true;
+  const cle = `organisme/${sha256}`;
+  try {
+    if (!(await env.FICHIERS.head(cle))) {
+      await env.FICHIERS.put(cle, octets, { httpMetadata: { contentType: "application/pdf" } });
+    }
+    await ajouterVersionPubliee(env.DB, {
+      id: crypto.randomUUID(),
+      code,
+      poseLe: iso(heure(env)),
+      sha256,
+      taille: octets.byteLength,
+      ip: adresseIp(requete),
+    });
+    return true;
+  } catch {
+    const encore = (await lireVersionsPubliees(env.DB)).some((ligne) => ligne.code === code && ligne.sha256 === sha256);
+    return encore;
   }
 }
 
@@ -182,35 +261,172 @@ async function empreinteOctets(octets: Uint8Array): Promise<string> {
   return [...new Uint8Array(digest)].map((octet) => octet.toString(16).padStart(2, "0")).join("");
 }
 
-const CODES_FICHIER = new Set<string>(["convention", "programme", "devis", ...MODELES.map(([code]) => code)]);
+const CODES_FICHIER = new Set<string>(["convention", "programme", "devis", "attestation", "facture", ...MODELES.map(([code]) => code)]);
 
-function cheminDossier(pathname: string): { id: string; piece: string | null; apercu: boolean } | null {
-  const trouve = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z]+)(?:\/(apercu))?)?$/.exec(
+function cheminDossier(pathname: string): { id: string; piece: string | null; version: number | null; apercu: boolean; signe: boolean } | null {
+  const trouve = /^\/dossiers\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z]+)(?:\/(signe|\d+))?(?:\/(apercu))?)?$/.exec(
     pathname,
   );
   if (!trouve?.[1]) return null;
   if (trouve[2] && !CODES_FICHIER.has(trouve[2])) return null;
-  return { id: trouve[1], piece: trouve[2] ?? null, apercu: trouve[3] === "apercu" };
+  return {
+    id: trouve[1],
+    piece: trouve[2] ?? null,
+    version: trouve[3] && trouve[3] !== "signe" ? Number(trouve[3]) : null,
+    apercu: trouve[4] === "apercu",
+    signe: trouve[3] === "signe",
+  };
 }
 
 async function voirDossier(requete: Request, env: Env, id: string): Promise<Response> {
   const secret = await exigerSecret(env);
   const session = await sessionOuverte(requete, env);
   if (!session) return formulaireConnexion(secret, null, session === undefined ? 401 : 200, session === undefined);
+  const note = lireNote(requete);
+  const html = await htmlDossier(env, requete, id, session.csrf, note.erreur, note.info);
+  if (!html) return reponse(404, "Ce dossier n'existe pas.\n");
+  return reponseHtml(200, html, note.cookie ? [note.cookie] : []);
+}
+
+async function produirePiece(requete: Request, env: Env, id: string, code: string): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, 401, true);
+  if (!pieceProduite(code) || !(await lireDossier(env.DB, id))) return reponse(404, "Cette page n'existe pas.\n");
+  const formulaire = await lireFormulaire(requete);
+  if (!formulaire || !memesJetons(session.csrf, brut(formulaire.get("csrf")))) {
+    const html = await htmlDossier(env, requete, id, session.csrf, "La page a expiré. Recharge-la.");
+    return reponseHtml(403, html ?? "Ce dossier n'existe pas.\n");
+  }
+  await produireModele(env.DB, env.FICHIERS, id, code, await lireOrganisme(env.DB), adresseIp(requete), agent(requete), iso(heure(env)));
+  return redirection(`/dossiers/${id}`);
+}
+
+async function deposerPiece(requete: Request, env: Env, id: string, code: string): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, 401, true);
+  if (!depotConnu(code) || !(await lireDossier(env.DB, id))) return reponse(404, "Cette page n'existe pas.\n");
+  const tailleMax = await lireTailleDepot(env.DB);
+  const formulaire = await lireFormulaire(requete, tailleMax + 65_536);
+  const refuser = async (statut: number, message: string) => {
+    const html = await htmlDossier(env, requete, id, session.csrf, message);
+    return reponseHtml(statut, html ?? "Ce dossier n'existe pas.\n");
+  };
+  if (!formulaire || !memesJetons(session.csrf, brut(formulaire.get("csrf")))) return refuser(403, "La page a expiré. Recharge-la.");
+  const fichier = formulaire.get("fichier");
+  if (!(fichier instanceof File) || fichier.size === 0) return refuser(400, "Le fichier manque.");
+  if (fichier.size > tailleMax) return refuser(413, "Le fichier dépasse la taille admise.");
+  const octets = new Uint8Array(await fichier.arrayBuffer());
+  if (!pdfReconnu(octets)) return refuser(400, "Le fichier n'est pas un PDF.");
+  if (!env.FICHIERS) return refuser(503, "Le stockage ne répond pas.");
+  const sha256 = await empreinteOctets(octets);
+  const deja = await fichierDejaLa(env, id, code, sha256);
+  if (deja) return redirection(`/dossiers/${id}`);
+  const cle = `scans/${sha256}`;
+  try {
+    if (!(await env.FICHIERS.head(cle))) {
+      await env.FICHIERS.put(cle, octets, { httpMetadata: { contentType: "application/pdf" } });
+    }
+    const relu = code === "convention" ? await relireConvention(octets.slice(), (await lireOrganisme(env.DB)).email, id, iso(heure(env))) : null;
+    const conserve = code === "convention" ? (await lireEtatPieces(env.DB, id)).convention?.corps : undefined;
+    await deposerPieceDossier(env.DB, {
+      dossierId: id,
+      code,
+      recuLe: iso(heure(env)),
+      ip: adresseIp(requete),
+      userAgent: agent(requete),
+      sha256,
+      taille: octets.byteLength,
+      corps: corpsSigne(relu?.corps, conserve),
+      dossier: relu?.dossier,
+    });
+    if (code === "convention" && !relu) {
+      const html = await htmlDossier(env, requete, id, session.csrf, "Ce PDF n'a pas de texte. La fiche n'a pas été relue.");
+      return reponseHtml(200, html ?? "Ce dossier n'existe pas.\n");
+    }
+  } catch {
+    const posee = await fichierDejaLa(env, id, code, sha256);
+    if (!posee) return refuser(503, "Le fichier n'a pas pu être pris.");
+  }
+  return redirection(`/dossiers/${id}`);
+}
+
+async function relireConvention(
+  octets: Uint8Array,
+  email: string,
+  id: string,
+  creeLe: string,
+): Promise<{ dossier: Parameters<typeof deposerPieceDossier>[1]["dossier"]; corps: string } | null> {
+  try {
+    const texte = await textePdf(octets);
+    if (texte.trim().length < 40) return null;
+    const lecture = lireConvention(texte, email);
+    if (lecture.raisons.length > 0) return null;
+    const analyse = analyserDossier(formulaireSaisie(lecture.saisie), id, creeLe);
+    if (!analyse.ok) return null;
+    const detail: Record<string, string> = {};
+    if (lecture.numero) detail.numero = lecture.numero;
+    if (lecture.devis) detail.devis = lecture.devis;
+    return { dossier: analyse.dossier, corps: JSON.stringify(detail) };
+  } catch {
+    return null;
+  }
+}
+
+async function htmlDossier(
+  env: Env,
+  requete: Request,
+  id: string,
+  csrf: string,
+  erreur: string | null,
+  info: string | null = null,
+): Promise<string | null> {
   const organisme = await lireOrganisme(env.DB);
   await produirePieces(env.DB, env.FICHIERS, id, organisme, adresseIp(requete), agent(requete), iso(heure(env)));
   const dossier = await lireDossier(env.DB, id);
-  if (!dossier) return reponse(404, "Ce dossier n'existe pas.\n");
+  if (!dossier) return null;
   const etat = await lireEtatPieces(env.DB, id);
-  return reponseHtml(
-    200,
-    pageDossier(dossier, {
+  const versions = await lireVersionsPieces(env.DB, id);
+  const signes = (await lireSignesPieces(env.DB, id)).map((ligne) => ligne.code);
+  const etatVerrous = await lireEtatVerrous(env.DB, id, jourParis(heure(env)));
+  const presents = new Set<string>([...versions.map((ligne) => ligne.code), ...signes]);
+  const base = {
+    heuresElearning: dossier.heures_elearning,
+    convocationAutorisee: etatVerrous ? envoiAutorise(etatVerrous, "envoyer_convocation") : false,
+    attestationAutorisee: etatVerrous ? envoiAutorise(etatVerrous, "generer_attestation") : false,
+    attestationTenue: etat.tenus.includes("attestation"),
+    presents,
+  };
+  const moments = (["avant", "pendant", "apres"] as const).map((moment) => ({
+    moment,
+    titre: titreMoment(moment),
+    lignes: catalogueCourrier({ moment, ...base }).map((ligne) => ({
+      code: ligne.code,
+      libelle: ligne.libelle,
+      motif: ligne.motif || (ligne.presente ? "" : "Pas de fichier."),
+      coche: ligne.presente && ligne.motif === "",
+      versions: versions.filter((fichier) => fichier.code === ligne.code).map((fichier) => fichier.version),
+      signe: signes.includes(ligne.code),
+    })),
+  }));
+  return pageDossier(
+    dossier,
+    {
       convention: etat.convention !== null,
       programme: etat.programme,
       devis: etat.devis,
       numeroConvention: etat.convention ? numeroConvention(etat.convention.corps) : "",
       modeles: etat.modeles,
-    }, session.csrf),
+      tenus: etat.tenus,
+      versions,
+      signes,
+      moments,
+    },
+    csrf,
+    heure(env),
+    erreur,
+    info,
   );
 }
 
@@ -219,13 +435,15 @@ async function telecharger(
   env: Env,
   id: string,
   piece: string,
+  version: number | null,
   apercu: boolean,
+  signe: boolean,
 ): Promise<Response> {
   const secret = await exigerSecret(env);
   const session = await sessionOuverte(requete, env);
   if (!session) return formulaireConnexion(secret, null, session === undefined ? 401 : 200, session === undefined);
   if (!env.FICHIERS) return reponse(503, "Le stockage ne répond pas.\n");
-  const cible = await cleTelechargement(env, id, piece);
+  const cible = signe ? await cleSigne(env, id, piece) : await cleTelechargement(env, id, piece, version);
   if (!cible) return reponse(404, "Cette pièce n'est pas là.\n");
   try {
     const objet = await env.FICHIERS.get(cible.cle);
@@ -241,23 +459,218 @@ async function telecharger(
   }
 }
 
+async function fichierDejaLa(env: Env, id: string, code: string, sha256: string): Promise<boolean> {
+  const versions = await lireVersionsPieces(env.DB, id);
+  const signes = await lireSignesPieces(env.DB, id);
+  return [...versions, ...signes].some((ligne) => ligne.code === code && ligne.sha256 === sha256);
+}
+
+function corpsSigne(corps?: string, conserve?: string): string {
+  const detail = { ...objetCorps(conserve), ...objetCorps(corps) };
+  detail.role = "signe";
+  return JSON.stringify(detail);
+}
+
+function objetCorps(corps?: string): Record<string, unknown> {
+  if (!corps) return {};
+  try {
+    const lu = JSON.parse(corps) as Record<string, unknown>;
+    if (lu && typeof lu === "object" && !Array.isArray(lu)) return lu;
+  } catch {
+    return {};
+  }
+  return {};
+}
+
+const TAILLE_COURRIER = 15_000_000;
+
+async function poserEmail(requete: Request, env: Env, id: string): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, 401, true);
+  if (!(await lireDossier(env.DB, id))) return reponse(404, "Ce dossier n'existe pas.\n");
+  const formulaire = await lireFormulaire(requete);
+  if (!formulaire || !memesJetons(session.csrf, brut(formulaire.get("csrf")))) {
+    const html = await htmlDossier(env, requete, id, session.csrf, "La page a expiré. Recharge-la.");
+    return reponseHtml(403, html ?? "Ce dossier n'existe pas.\n");
+  }
+  const email = brut(formulaire.get("email")).trim();
+  if (!emailAdmissible(email)) {
+    const html = await htmlDossier(env, requete, id, session.csrf, "L'e-mail n'est pas valide.");
+    return reponseHtml(400, html ?? "Ce dossier n'existe pas.\n");
+  }
+  await poserEmailStagiaire(env.DB, id, email, iso(heure(env)), adresseIp(requete));
+  return redirection(`/dossiers/${id}`);
+}
+
+async function envoyerCourrierDossier(requete: Request, env: Env, id: string): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, 401, true);
+  const dossier = await lireDossier(env.DB, id);
+  if (!dossier) return reponse(404, "Ce dossier n'existe pas.\n");
+  const formulaire = await lireFormulaire(requete);
+  const page = (erreur: string | null, info: string | null = null) => {
+    const message = erreur ?? info ?? "";
+    return redirection(`/dossiers/${id}`, [cookieHote(NOM_INFO, encodeURIComponent(`${erreur ? "e" : "i"}:${message}`), 120)]);
+  };
+  if (!formulaire || !memesJetons(session.csrf, brut(formulaire.get("csrf")))) {
+    const html = await htmlDossier(env, requete, id, session.csrf, "La page a expiré. Recharge-la.");
+    return reponseHtml(403, html ?? "Ce dossier n'existe pas.\n");
+  }
+  const momentDemande = brut(formulaire.get("moment"));
+  if (!momentConnu(momentDemande)) return reponse(404, "Cette page n'existe pas.\n");
+  const moment: Moment = momentDemande;
+  const destinataire = dossier.stagiaire_email.trim();
+  if (!emailAdmissible(destinataire)) return page("Ce dossier n'a pas d'e-mail.");
+  if (!env.FICHIERS) return page("Le stockage ne répond pas.");
+  const organisme = await lireOrganisme(env.DB);
+  const etatVerrous = await lireEtatVerrous(env.DB, id, jourParis(heure(env)));
+  if (!etatVerrous) return page("Le dossier n'a pas pu être lu.");
+  const versions = await lireVersionsPieces(env.DB, id);
+  const signes = await lireSignesPieces(env.DB, id);
+  const presents = new Set<string>([...versions, ...signes].map((ligne) => ligne.code));
+  const choixActif = brut(formulaire.get("choix")) === "1";
+  const coches = new Set(formulaire.getAll("inclure").flatMap((valeur) => (typeof valeur === "string" ? [valeur] : [])));
+  const selection = inclureSiCochee(
+    selectionCourrier({
+      moment,
+      heuresElearning: dossier.heures_elearning,
+      convocationAutorisee: envoiAutorise(etatVerrous, "envoyer_convocation"),
+      attestationAutorisee: envoiAutorise(etatVerrous, "generer_attestation"),
+      attestationTenue: (await lireEtatPieces(env.DB, id)).tenus.includes("attestation"),
+      presents,
+    }),
+    "convocation",
+    choixActif && coches.has("convocation"),
+    presents.has("convocation"),
+  );
+  const attente = choixActif ? attenteCochee(selection.attente, coches) : [...selection.attente];
+  const joints: { code: string; libelle: string; nom: string; octets: Uint8Array }[] = [];
+  const laissees: string[] = [];
+  let total = 0;
+  for (const piece of selection.joints) {
+    if (choixActif && !coches.has(piece.code)) {
+      laissees.push(piece.libelle);
+      continue;
+    }
+    const cle = cleDe(piece.code, brut(formulaire.get(piece.code)), signes, versions);
+    const objet = cle ? await env.FICHIERS.get(cle) : null;
+    if (!objet) {
+      attente.push(piece.libelle);
+      continue;
+    }
+    const octets = new Uint8Array(await objet.arrayBuffer());
+    if (octets.byteLength === 0 || total + octets.byteLength > TAILLE_COURRIER) {
+      attente.push(`${piece.libelle}, trop volumineux`);
+      continue;
+    }
+    total += octets.byteLength;
+    const cible = retenirCible(
+      brut(formulaire.get(piece.code)),
+      versions.filter((ligne) => ligne.code === piece.code).map((ligne) => ligne.version),
+      signes.some((ligne) => ligne.code === piece.code),
+    );
+    joints.push({ code: piece.code, libelle: etiquetteEnvoi(piece.libelle, cible), nom: piece.fichier, octets });
+  }
+  const libelles = joints.map((piece) => piece.libelle);
+  if (joints.length === 0) return page(null, messagePage(destinataire, libelles, attente, laissees));
+  const expediteur = organisme.email.trim();
+  if (!emailAdmissible(expediteur)) return page("L'adresse d'envoi manque.");
+  const lettre = lettreCourrier({
+    nom: dossier.stagiaire_nom,
+    intitule: dossier.intitule,
+    moment,
+    joints: libelles,
+    attente,
+  });
+  const copieDemandee = brut(formulaire.get("copie")) === "1";
+  const copie =
+    copieDemandee && emailAdmissible(expediteur) && expediteur.toLowerCase() !== destinataire.toLowerCase()
+      ? { nom: organisme.nom, email: expediteur }
+      : null;
+  const courrier: CourrierSortant = {
+    expediteur: { nom: organisme.nom.trim() || "deter-mi.net", email: expediteur },
+    destinataire: { nom: dossier.stagiaire_nom, email: destinataire },
+    copie,
+    sujet: lettre.sujet,
+    texte: lettre.texte,
+    pieces: joints.map((piece) => ({ nom: piece.nom, octets: piece.octets })),
+  };
+  const transport = env.envoyerCourrier ?? (env.BREVO_API_KEY ? (message: CourrierSortant) => envoyerBrevo(env.BREVO_API_KEY ?? "", message) : null);
+  if (!transport) return page("La clé d'envoi n'est pas posée.");
+  const parti = await transport(courrier);
+  if (!parti) return page("L'envoi n'est pas parti.");
+  await noterEnvoi(env.DB, {
+    dossierId: id,
+    moment,
+    codes: joints.map((piece) => piece.code),
+    recuLe: iso(heure(env)),
+    ip: adresseIp(requete),
+  });
+  return page(null, messagePage(destinataire, libelles, attente, laissees));
+}
+
+function envoiAutorise(etat: Etat, action: "envoyer_convocation" | "generer_attestation"): boolean {
+  return juger(etat, action).verrous.every((verrou) => verrou.code === "organisme_incomplet" || !verrou.effectif);
+}
+
+function cleDe(
+  code: string,
+  choix: string,
+  signes: readonly { code: string; r2_cle: string }[],
+  versions: readonly { code: string; version: number; r2_cle: string }[],
+): string | null {
+  const liste = versions.filter((ligne) => ligne.code === code);
+  const cible = retenirCible(
+    choix,
+    liste.map((ligne) => ligne.version),
+    signes.some((ligne) => ligne.code === code),
+  );
+  if (cible === "signe") return signes.find((ligne) => ligne.code === code)?.r2_cle ?? null;
+  if (typeof cible === "number") return liste.find((ligne) => ligne.version === cible)?.r2_cle ?? null;
+  return null;
+}
+
+function lireNote(requete: Request): { erreur: string | null; info: string | null; cookie: string | null } {
+  const valeur = lireCookie(requete.headers.get("Cookie"), NOM_INFO);
+  if (!valeur) return { erreur: null, info: null, cookie: null };
+  let texte = "";
+  try {
+    texte = decodeURIComponent(valeur);
+  } catch {
+    texte = "";
+  }
+  const erreur = texte.startsWith("e:") ? texte.slice(2) : null;
+  const info = texte.startsWith("i:") ? texte.slice(2) : null;
+  return { erreur, info, cookie: effacerCookie(NOM_INFO) };
+}
+
+function jourParis(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
+async function cleSigne(env: Env, id: string, piece: string): Promise<{ cle: string; nom: string } | null> {
+  const ligne = (await lireSignesPieces(env.DB, id)).find((candidat) => candidat.code === piece);
+  if (!ligne) return null;
+  return { cle: ligne.r2_cle, nom: `${piece}-signe.pdf` };
+}
+
 async function cleTelechargement(
   env: Env,
   id: string,
   piece: string,
+  version: number | null,
 ): Promise<{ cle: string; nom: string } | null> {
+  const versions = (await lireVersionsPieces(env.DB, id)).filter((ligne) => ligne.code === piece);
+  const cible = version === null ? versions.at(-1) : versions.find((ligne) => ligne.version === version);
+  if (!cible) return null;
   if (piece === "devis") {
     const etat = await lireEtatPieces(env.DB, id);
-    if (!etat.devis?.r2_cle) return null;
-    return { cle: etat.devis.r2_cle, nom: `devis-${numeroDevis(etat.devis.annee, etat.devis.numero)}.pdf` };
+    const numero = etat.devis ? numeroDevis(etat.devis.annee, etat.devis.numero) : "devis";
+    return { cle: cible.r2_cle, nom: `devis-${numero}-v${cible.version}.pdf` };
   }
-  if (piece === "convention" || piece === "programme") {
-    const cle = await cleRetour(env.DB, id, piece);
-    return cle ? { cle, nom: `${piece}.pdf` } : null;
-  }
-  const cle = await cleRetour(env.DB, id, "modele", piece);
-  if (!cle) return null;
-  return { cle, nom: `${piece}.pdf` };
+  return { cle: cible.r2_cle, nom: `${piece}-v${cible.version}.pdf` };
 }
 
 async function accueilOuConnexion(requete: Request, env: Env): Promise<Response> {
@@ -278,7 +691,7 @@ async function pageAvecGuide(
   saisie: SaisieDossier,
   reprise: Reprise | null = null,
 ): Promise<string> {
-  return pageAccueil(fiche, dossiers, csrf, erreur, saisie, reprise, await assurerGuide(env));
+  return pageAccueil(fiche, dossiers, csrf, erreur, saisie, reprise, await assurerGuide(env), await lireVersionsPubliees(env.DB));
 }
 
 async function assurerGuide(env: Env) {
@@ -338,14 +751,14 @@ async function deposerAudit(requete: Request, env: Env, code: string): Promise<R
   if (!pdfReconnu(octets)) {
     return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, session.csrf, "Le fichier n'est pas un PDF.", saisieVide()));
   }
-  return rangerAudit(env, requete, session.csrf, fiche, dossiers, code, octets, "depot");
+  return rangerAudit(env, requete, session.csrf, fiche, dossiers, code, octets, "depot", true);
 }
 
-async function produireAudit(requete: Request, env: Env, code: string): Promise<Response> {
+async function produireAudit(requete: Request, env: Env, code: string | null): Promise<Response> {
   const secret = await exigerSecret(env);
   const session = await sessionOuverte(requete, env);
   if (!session) return formulaireConnexion(secret, null, 401, true);
-  if (code !== "auto_evaluation") return reponse(404, "Cette page n'existe pas.\n");
+  if (code !== null && !noteParCode(code)) return reponse(404, "Cette page n'existe pas.\n");
   const formulaire = await lireFormulaire(requete);
   const fiche = await lireOrganisme(env.DB);
   const dossiers = await listerDossiers(env.DB);
@@ -354,11 +767,57 @@ async function produireAudit(requete: Request, env: Env, code: string): Promise<
   }
   const vue = await assurerGuide(env);
   const jour = new Intl.DateTimeFormat("fr-FR", { timeZone: "Europe/Paris", dateStyle: "long" }).format(heure(env));
-  const texte = texteAutoEvaluation(fiche.nom, vue.version, vue.lignes, jour);
-  if (!texte) {
-    return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, session.csrf, "Le guide n'est pas là.", saisieVide()));
+  const matiere = await lireMatiere(env.DB);
+  const codes = code === null ? NOTES.map((note) => note.code) : [code];
+  const ordre = [...codes.filter((un) => un !== "auto_evaluation"), ...codes.filter((un) => un === "auto_evaluation")];
+  let lignes = vue.lignes;
+  for (const un of ordre) {
+    if (un === "auto_evaluation") {
+      const preuves = await lirePreuves(env.DB);
+      const dates = new Map(preuves.dates);
+      dates.set("auto_evaluation", heure(env).toISOString());
+      lignes = conformite(
+        vue.lignes.map((ligne) => ({ numero: ligne.numero, titre: ligne.titre })),
+        { ...preuves, dates },
+        heure(env),
+      );
+    }
+    const produit = texteExigence(un, {
+      nom: fiche.nom,
+      siret: fiche.siret,
+      nda: fiche.nda,
+      adresse: fiche.adresse,
+      codePostal: fiche.code_postal,
+      ville: fiche.ville,
+      telephone: fiche.telephone,
+      email: fiche.email,
+      dossiers: dossiers.map((dossier) => ({
+        nom: dossier.stagiaire_nom,
+        intitule: dossier.intitule,
+        debut: dossier.date_debut,
+        fin: dossier.date_fin,
+        statut: dossier.statut,
+        heures: dossier.heures_total,
+        modalite: dossier.modalite,
+        handicap: dossier.handicap,
+      })),
+      lignes,
+      versionGuide: vue.version,
+      risques: matiere.risques,
+      reclamations: matiere.reclamations,
+      mesures: matiere.mesures,
+      jour,
+    });
+    if (!produit) {
+      if (code !== null) {
+        return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, session.csrf, "Le guide n'est pas là.", saisieVide()));
+      }
+      continue;
+    }
+    const erreur = await poserVersion(env, requete, session.csrf, fiche, dossiers, un, htmlVersPdf(normaliserHtml(produit.texte)), "produit", produit.tient);
+    if (erreur) return erreur;
   }
-  return rangerAudit(env, requete, session.csrf, fiche, dossiers, code, ecrirePdf(texte), "produit");
+  return redirection("/#audit");
 }
 
 async function rangerAudit(
@@ -370,12 +829,29 @@ async function rangerAudit(
   code: string,
   octets: Uint8Array,
   origine: "depot" | "produit",
+  tient: boolean,
 ): Promise<Response> {
+  const erreur = await poserVersion(env, requete, csrf, fiche, dossiers, code, octets, origine, tient);
+  if (erreur) return erreur;
+  return redirection("/#audit");
+}
+
+async function poserVersion(
+  env: Env,
+  requete: Request,
+  csrf: string,
+  fiche: Fiche,
+  dossiers: readonly DossierLigne[],
+  code: string,
+  octets: Uint8Array,
+  origine: "depot" | "produit",
+  tient: boolean,
+): Promise<Response | null> {
   if (!env.FICHIERS) return reponse(503, "Le stockage ne répond pas.\n");
   const sha256 = await empreinteFichier(octets.slice());
   const versions = await lireVersionsOrganisme(env.DB);
   const courante = versions.filter((version) => version.code === code).at(-1);
-  if (courante?.sha256 === sha256) return redirection("/#audit");
+  if (courante?.sha256 === sha256) return null;
   const pose = await poserFichier(env.FICHIERS, `audit/${sha256}`, octets);
   if (pose === "erreur") {
     return reponseHtml(503, await pageAvecGuide(env, fiche, dossiers, csrf, "Le stockage ne répond pas.", saisieVide()));
@@ -389,11 +865,12 @@ async function rangerAudit(
       sha256,
       taille: octets.byteLength,
       ip: adresseIp(requete),
+      tient,
     });
   } catch {
     return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, "La version n'a pas été enregistrée.", saisieVide()));
   }
-  return redirection("/#audit");
+  return null;
 }
 
 async function servirAudit(

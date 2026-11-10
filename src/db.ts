@@ -1,5 +1,6 @@
 import type { DossierPret } from "./dossiers.ts";
 import type { Preuves } from "./guide.ts";
+import type { Derogation, Etat, Exigence, Piece, Seance, StatutPiece } from "./verrous.ts";
 
 export type RequeteLiee = {
   first<T>(): Promise<T | null>;
@@ -54,6 +55,9 @@ export type DossierLigne = {
   statut: string;
   prix_ht_centimes: number;
   tva_taux_bp: number;
+  heures_total: number;
+  modalite: string;
+  handicap: number;
 };
 
 export type DossierComplet = DossierLigne & {
@@ -73,6 +77,7 @@ export type EtatPieces = {
   programme: boolean;
   devis: { annee: number; numero: number; r2_cle: string } | null;
   modeles: string[];
+  tenus: string[];
 };
 
 export async function lireHashMotDePasse(db: Preparer): Promise<string | null> {
@@ -244,7 +249,7 @@ export async function listerDossiers(db: Preparer): Promise<DossierLigne[]> {
   return plusieurs<DossierLigne>(
     db,
     `SELECT id, stagiaire_nom, intitule, financeur, date_debut, date_fin, statut,
-            prix_ht_centimes, tva_taux_bp
+            prix_ht_centimes, tva_taux_bp, heures_total, modalite, handicap
        FROM dossiers
       ORDER BY cree_le DESC`,
   );
@@ -346,26 +351,415 @@ export async function insererDossier(
   ]);
 }
 
-export async function lireDocumentOrganisme(db: Preparer, code: string): Promise<string | null> {
-  const ligne = await une<{ r2_cle: string }>(
+export type VersionPubliee = {
+  code: string;
+  version: number;
+  pose_le: string;
+  sha256: string;
+  r2_cle: string;
+};
+
+export async function lireVersionsPubliees(db: Preparer): Promise<VersionPubliee[]> {
+  return plusieurs<VersionPubliee>(
     db,
-    "SELECT r2_cle FROM documents_organisme WHERE code = ?",
-    code,
+    "SELECT code, version, pose_le, sha256, r2_cle FROM versions_publiees ORDER BY code, version",
   );
-  return ligne?.r2_cle ?? null;
 }
 
-export async function enregistrerDocumentOrganisme(
+export async function ajouterVersionPubliee(
   db: Preparer,
-  entree: { code: string; libelle: string; sha256: string; taille: number; poseLe: string },
+  entree: { id: string; code: string; poseLe: string; sha256: string; taille: number; ip: string },
 ): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO documents_organisme (code, libelle, sha256, r2_cle, taille_octets, pose_le)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(entree.code, entree.libelle, entree.sha256, `organisme/${entree.sha256}`, entree.taille, entree.poseLe)
-    .run();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO versions_publiees (id, code, version, pose_le, sha256, r2_cle, taille_octets)
+         VALUES (
+           ?, ?,
+           (SELECT COALESCE(MAX(version), 0) + 1 FROM versions_publiees WHERE code = ?),
+           ?, ?, ?, ?
+         )`,
+      )
+      .bind(entree.id, entree.code, entree.code, entree.poseLe, entree.sha256, `organisme/${entree.sha256}`, entree.taille),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'version_publiee', 'versions_publiees', ?, ?)`,
+      )
+      .bind(entree.poseLe, entree.ip, entree.id, JSON.stringify({ code: entree.code })),
+  ]);
+}
+
+export type VersionPiece = {
+  code: string;
+  version: number;
+  sha256: string;
+  r2_cle: string;
+};
+
+const ALIAS_RETOUR: Record<string, string> = {
+  suivi_elearning: "suivi",
+  releve_connexion: "connexion",
+  qcm_sortie: "qcm",
+};
+
+const DEPOTS: Record<string, { type: string; piece: { statut: string; libelle: string } | null }> = {
+  analyse: { type: "analyse", piece: null },
+  positionnement: { type: "positionnement", piece: null },
+  reglement: { type: "reglement", piece: null },
+  convention: { type: "convention", piece: null },
+  programme: { type: "programme", piece: null },
+  devis: { type: "devis", piece: null },
+  convocation: { type: "convocation", piece: { statut: "envoyee", libelle: "Convocation" } },
+  emargement: { type: "emargement", piece: { statut: "revenue", libelle: "Émargement" } },
+  suivi: { type: "suivi_elearning", piece: null },
+  connexion: { type: "releve_connexion", piece: null },
+  qcm: { type: "qcm_sortie", piece: null },
+  attestation: { type: "attestation", piece: null },
+  facture: { type: "facture", piece: null },
+};
+
+export function depotConnu(code: string): boolean {
+  return Object.prototype.hasOwnProperty.call(DEPOTS, code);
+}
+
+function codeDepuisRetour(type: string, seanceId: string): string | null {
+  if (type === "modele") return seanceId || null;
+  return ALIAS_RETOUR[type] ?? type;
+}
+
+const TYPES_SIGNES = new Set([
+  "analyse",
+  "positionnement",
+  "reglement",
+  "devis",
+  "convocation",
+  "emargement",
+  "suivi_elearning",
+  "qcm_sortie",
+  "attestation",
+  "facture",
+]);
+
+function roleSigne(corps: string): boolean {
+  try {
+    return (JSON.parse(corps) as { role?: unknown }).role === "signe";
+  } catch {
+    return false;
+  }
+}
+
+function conventionsRepetees(lignes: readonly { type: string; sha256: string }[]): Set<string> {
+  const comptes = new Map<string, number>();
+  for (const ligne of lignes) {
+    if (ligne.type !== "convention") continue;
+    comptes.set(ligne.sha256, (comptes.get(ligne.sha256) ?? 0) + 1);
+  }
+  return new Set([...comptes].filter(([, nombre]) => nombre > 1).map(([sha]) => sha));
+}
+
+function estSigne(type: string, corps: string, sha256: string, repetees: Set<string>): boolean {
+  return TYPES_SIGNES.has(type) || roleSigne(corps) || (type === "convention" && repetees.has(sha256));
+}
+
+async function lireRetoursFichiers(db: Preparer, dossierId: string) {
+  return plusieurs<{ type: string; seance_id: string; corps: string; sha256: string; r2_cle: string; recu_le: string }>(
+    db,
+    `SELECT type, seance_id, corps, sha256, r2_cle, recu_le
+       FROM retours
+      WHERE dossier_id = ? AND r2_cle IS NOT NULL AND sha256 IS NOT NULL
+      ORDER BY recu_le, version`,
+    dossierId,
+  );
+}
+
+export async function lireSignesPieces(db: Preparer, dossierId: string): Promise<VersionPiece[]> {
+  const lignes = await lireRetoursFichiers(db, dossierId);
+  const repetees = conventionsRepetees(lignes);
+  const derniers = new Map<string, { sha256: string; r2_cle: string; recu_le: string }>();
+  for (const ligne of lignes) {
+    if (!estSigne(ligne.type, ligne.corps, ligne.sha256, repetees)) continue;
+    const code = codeDepuisRetour(ligne.type, ligne.seance_id);
+    if (!code) continue;
+    const connu = derniers.get(code);
+    if (!connu || ligne.recu_le >= connu.recu_le) derniers.set(code, ligne);
+  }
+  return [...derniers].map(([code, ligne]) => ({ code, version: 0, sha256: ligne.sha256, r2_cle: ligne.r2_cle }));
+}
+
+export async function lireVersionsPieces(db: Preparer, dossierId: string): Promise<VersionPiece[]> {
+  const retours = await lireRetoursFichiers(db, dossierId);
+  const repetees = conventionsRepetees(retours);
+  const groupes = new Map<string, { sha256: string; r2_cle: string; recu_le: string }[]>();
+  for (const ligne of retours) {
+    if (estSigne(ligne.type, ligne.corps, ligne.sha256, repetees)) continue;
+    const code = codeDepuisRetour(ligne.type, ligne.seance_id);
+    if (!code) continue;
+    const liste = groupes.get(code) ?? [];
+    liste.push({ sha256: ligne.sha256, r2_cle: ligne.r2_cle, recu_le: ligne.recu_le });
+    groupes.set(code, liste);
+  }
+  const devis = await une<{ sha256: string; r2_cle: string; cree_le: string }>(
+    db,
+    `SELECT sha256, r2_cle, cree_le FROM devis
+      WHERE dossier_id = ? AND statut != 'annule' AND r2_cle IS NOT NULL AND sha256 IS NOT NULL
+      ORDER BY annee, numero LIMIT 1`,
+    dossierId,
+  );
+  if (devis?.sha256 && devis.r2_cle) {
+    const liste = groupes.get("devis") ?? [];
+    if (!liste.some((ligne) => ligne.sha256 === devis.sha256)) {
+      liste.push({ sha256: devis.sha256, r2_cle: devis.r2_cle, recu_le: devis.cree_le });
+    }
+    groupes.set("devis", liste);
+  }
+  const sortie: VersionPiece[] = [];
+  for (const [code, liste] of groupes) {
+    liste.sort((a, b) => a.recu_le.localeCompare(b.recu_le));
+    liste.forEach((ligne, index) => {
+      sortie.push({ code, version: index + 1, sha256: ligne.sha256, r2_cle: ligne.r2_cle });
+    });
+  }
+  return sortie;
+}
+
+export async function lireShaModeles(db: Preparer, dossierId: string): Promise<Map<string, string>> {
+  const lignes = await plusieurs<{ seance_id: string; version: number; sha256: string }>(
+    db,
+    `SELECT seance_id, version, sha256 FROM retours
+      WHERE dossier_id = ? AND type = 'modele' AND sha256 IS NOT NULL
+      ORDER BY version`,
+    dossierId,
+  );
+  const rang = new Map<string, { version: number; sha256: string }>();
+  for (const ligne of lignes) {
+    const connu = rang.get(ligne.seance_id);
+    if (!connu || Number(ligne.version) > connu.version) {
+      rang.set(ligne.seance_id, { version: Number(ligne.version), sha256: ligne.sha256 });
+    }
+  }
+  return new Map([...rang].map(([code, ligne]) => [code, ligne.sha256]));
+}
+
+export async function lireShaRetour(db: Preparer, dossierId: string, type: string): Promise<string | null> {
+  const ligne = await une<{ sha256: string }>(
+    db,
+    `SELECT sha256 FROM retours
+      WHERE dossier_id = ? AND type = ? AND seance_id = '' AND sha256 IS NOT NULL
+      ORDER BY version DESC LIMIT 1`,
+    dossierId,
+    type,
+  );
+  return ligne?.sha256 ?? null;
+}
+
+export async function ajouterVersionProgramme(
+  db: Preparer,
+  entree: {
+    dossierId: string;
+    intitule: string;
+    heuresTotal: number;
+    heuresCoaching: number;
+    heuresElearning: number;
+    contenu: string;
+    recuLe: string;
+    ip: string;
+    userAgent: string;
+    sha256: string;
+    taille: number;
+  },
+): Promise<void> {
+  const programmeId = crypto.randomUUID();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO programmes (id, intitule, heures_total, heures_coaching, heures_elearning, contenu)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(programmeId, entree.intitule, entree.heuresTotal, entree.heuresCoaching, entree.heuresElearning, entree.contenu),
+    db.prepare("UPDATE dossiers SET programme_id = ? WHERE id = ?").bind(programmeId, entree.dossierId),
+    db
+      .prepare(
+        `INSERT INTO pieces (
+           id, dossier_id, code, seance_id, libelle, indicateur, echeance,
+           echeance_verifiee_le, echeance_origine, statut, derniere_version
+         )
+         SELECT ?, ?, 'programme', '', 'Programme', NULL, NULL, NULL, 'registre', 'prete', 1
+          WHERE NOT EXISTS (
+            SELECT 1 FROM pieces WHERE dossier_id = ? AND code = 'programme' AND seance_id = ''
+          )`,
+      )
+      .bind(crypto.randomUUID(), entree.dossierId, entree.dossierId),
+    db
+      .prepare(
+        `INSERT INTO retours (
+           id, dossier_id, type, seance_id, version, recu_le, ip, user_agent,
+           corps, mime, taille_octets, sha256, r2_cle
+         ) VALUES (
+           ?, ?, 'programme', '',
+           (SELECT COALESCE(MAX(version), 0) + 1 FROM retours WHERE dossier_id = ? AND type = 'programme' AND seance_id = ''),
+           ?, ?, ?, '{}', 'application/pdf', ?, ?, ?
+         )`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        entree.dossierId,
+        entree.dossierId,
+        entree.recuLe,
+        entree.ip,
+        entree.userAgent,
+        entree.taille,
+        entree.sha256,
+        `scans/${entree.sha256}`,
+      ),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'programme_extrait', 'dossiers', ?, '{}')`,
+      )
+      .bind(entree.recuLe, entree.ip, entree.dossierId),
+  ]);
+}
+
+export async function deposerPieceDossier(
+  db: Preparer,
+  entree: {
+    dossierId: string;
+    code: string;
+    recuLe: string;
+    ip: string;
+    userAgent: string;
+    sha256: string;
+    taille: number;
+    corps?: string;
+    dossier?: DossierPret;
+  },
+): Promise<boolean> {
+  const depot = DEPOTS[entree.code];
+  if (!depot) return false;
+  const requetes: RequeteLiee[] = [];
+  if (entree.dossier && entree.dossier.id === entree.dossierId) {
+    const fiche = entree.dossier;
+    requetes.push(
+      db
+        .prepare(
+          `UPDATE dossiers SET
+             stagiaire_nom = ?,
+             stagiaire_email = CASE WHEN ? = '' THEN stagiaire_email ELSE ? END,
+             stagiaire_tel = CASE WHEN ? = '' THEN stagiaire_tel ELSE ? END,
+             entreprise = ?,
+             entreprise_siret = ?,
+             entreprise_adresse = ?,
+             representant = ?,
+             financeur = CASE WHEN ? = '' THEN financeur ELSE ? END,
+             financeur_dossier = CASE WHEN ? = '' THEN financeur_dossier ELSE ? END,
+             intitule = ?,
+             date_debut = ?,
+             date_fin = COALESCE(?, date_fin),
+             heures_total = ?,
+             heures_coaching = ?,
+             heures_elearning = ?,
+             prix_ht_centimes = ?,
+             tva_taux_bp = ?,
+             modalite = ?
+           WHERE id = ?`,
+        )
+        .bind(
+          fiche.stagiaire_nom,
+          fiche.stagiaire_email,
+          fiche.stagiaire_email,
+          fiche.stagiaire_tel,
+          fiche.stagiaire_tel,
+          fiche.entreprise,
+          fiche.entreprise_siret,
+          fiche.entreprise_adresse,
+          fiche.representant,
+          fiche.financeur,
+          fiche.financeur,
+          fiche.financeur_dossier,
+          fiche.financeur_dossier,
+          fiche.intitule,
+          fiche.date_debut,
+          fiche.date_fin,
+          fiche.heures_total,
+          fiche.heures_coaching,
+          fiche.heures_elearning,
+          fiche.prix_ht_centimes,
+          fiche.tva_taux_bp,
+          fiche.modalite,
+          fiche.id,
+        ),
+    );
+  }
+  requetes.push(
+    db
+      .prepare(
+        `INSERT INTO retours (
+           id, dossier_id, type, seance_id, version, recu_le, ip, user_agent,
+           corps, mime, taille_octets, sha256, r2_cle
+         ) VALUES (
+           ?, ?, ?, '',
+           (SELECT COALESCE(MAX(version), 0) + 1 FROM retours WHERE dossier_id = ? AND type = ? AND seance_id = ''),
+           ?, ?, ?, ?, 'application/pdf', ?, ?, ?
+         )`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        entree.dossierId,
+        depot.type,
+        entree.dossierId,
+        depot.type,
+        entree.recuLe,
+        entree.ip,
+        entree.userAgent,
+        entree.corps && entree.corps.trim() !== "" ? entree.corps : "{}",
+        entree.taille,
+        entree.sha256,
+        `scans/${entree.sha256}`,
+      ),
+  );
+  if (depot.piece) {
+    requetes.push(
+      db
+        .prepare(
+          `INSERT INTO pieces (
+             id, dossier_id, code, seance_id, libelle, indicateur, echeance,
+             echeance_verifiee_le, echeance_origine, statut, derniere_version
+           )
+           SELECT ?, ?, ?, '', ?, NULL, NULL, NULL, 'registre', ?, 1
+            WHERE NOT EXISTS (
+              SELECT 1 FROM pieces WHERE dossier_id = ? AND code = ? AND seance_id = ''
+            )`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          entree.dossierId,
+          entree.code,
+          depot.piece.libelle,
+          depot.piece.statut,
+          entree.dossierId,
+          entree.code,
+        ),
+      db
+        .prepare(
+          `UPDATE pieces
+              SET statut = ?
+            WHERE dossier_id = ? AND code = ? AND seance_id = ''
+              AND statut IN ('attente', 'prete')`,
+        )
+        .bind(depot.piece.statut, entree.dossierId, entree.code),
+    );
+  }
+  requetes.push(
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'piece_deposee', 'dossiers', ?, ?)`,
+      )
+      .bind(entree.recuLe, entree.ip, entree.dossierId, JSON.stringify({ code: entree.code })),
+  );
+  await db.batch(requetes);
+  return true;
 }
 
 export async function lireDossier(db: Preparer, id: string): Promise<DossierComplet | null> {
@@ -404,7 +798,184 @@ export async function lireEtatPieces(db: Preparer, dossierId: string): Promise<E
     "SELECT seance_id FROM retours WHERE dossier_id = ? AND type = 'modele' AND r2_cle IS NOT NULL",
     dossierId,
   );
-  return { convention, programme: (programme?.n ?? 0) > 0, devis, modeles: modeles.map((ligne) => ligne.seance_id) };
+  const retours = await plusieurs<{ type: string }>(
+    db,
+    `SELECT type FROM retours
+      WHERE dossier_id = ? AND seance_id = '' AND r2_cle IS NOT NULL
+        AND type IN (
+          'analyse', 'positionnement', 'reglement', 'devis', 'convocation',
+          'emargement', 'suivi_elearning', 'releve_connexion', 'qcm_sortie', 'attestation', 'facture'
+        )`,
+    dossierId,
+  );
+  const convocation = await une<{ n: number }>(
+    db,
+    `SELECT count(*) AS n FROM pieces
+      WHERE dossier_id = ? AND code = 'convocation' AND seance_id = ''
+        AND statut IN ('envoyee', 'revenue')`,
+    dossierId,
+  );
+  const tenus = retours.map((ligne) => ALIAS_RETOUR[ligne.type] ?? ligne.type);
+  if ((convocation?.n ?? 0) > 0 && !tenus.includes("convocation")) tenus.push("convocation");
+  return { convention, programme: (programme?.n ?? 0) > 0, devis, modeles: modeles.map((ligne) => ligne.seance_id), tenus };
+}
+
+export async function poserEmailStagiaire(
+  db: Preparer,
+  dossierId: string,
+  email: string,
+  recuLe: string,
+  ip: string,
+): Promise<void> {
+  await db.batch([
+    db.prepare("UPDATE dossiers SET stagiaire_email = ? WHERE id = ?").bind(email, dossierId),
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'email_stagiaire', 'dossiers', ?, '{}')`,
+      )
+      .bind(recuLe, ip, dossierId),
+  ]);
+}
+
+const STATUTS_PIECE = new Set<StatutPiece>(["attente", "prete", "envoyee", "revenue", "annulee"]);
+const STATUTS_SEANCE = new Set<Seance["statut"]>(["prevue", "tenue", "reportee"]);
+
+export async function lireEtatVerrous(db: Preparer, dossierId: string, aujourdhui: string): Promise<Etat | null> {
+  const dossier = await une<{ id: string; financeur: string; heures_elearning: number }>(
+    db,
+    "SELECT id, financeur, heures_elearning FROM dossiers WHERE id = ?",
+    dossierId,
+  );
+  if (!dossier) return null;
+  const reglages = await une<{
+    nom: string;
+    siret: string;
+    nda: string;
+    adresse: string;
+    code_postal: string;
+    ville: string;
+    email: string;
+    derogation_autorisee: number;
+  }>(
+    db,
+    `SELECT nom, siret, nda, adresse, code_postal, ville, email, derogation_autorisee
+       FROM reglages WHERE id = ?`,
+    1,
+  );
+  if (!reglages) return null;
+  const seances = await plusieurs<{ id: string; dossier_id: string; jour: string; statut: string; remplacee_par: string | null }>(
+    db,
+    "SELECT id, dossier_id, jour, statut, remplacee_par FROM seances WHERE dossier_id = ?",
+    dossierId,
+  );
+  const retours = await plusieurs<{ type: string; seance_id: string }>(
+    db,
+    "SELECT type, seance_id FROM retours WHERE dossier_id = ? AND r2_cle IS NOT NULL",
+    dossierId,
+  );
+  const pieces = await plusieurs<{ code: string; statut: string }>(
+    db,
+    "SELECT code, statut FROM pieces WHERE dossier_id = ? AND seance_id = ''",
+    dossierId,
+  );
+  const exigences = await plusieurs<Exigence>(
+    db,
+    "SELECT financeur, code_piece, statut_requis FROM exigences_financeur",
+  );
+  const derogations = await plusieurs<Derogation>(
+    db,
+    "SELECT verrou_code, effet, creee_le FROM derogations WHERE dossier_id = ? ORDER BY creee_le",
+    dossierId,
+  );
+  const piecesTenues: Piece[] = [];
+  for (const ligne of pieces) {
+    if (!STATUTS_PIECE.has(ligne.statut as StatutPiece)) continue;
+    piecesTenues.push({ code: ligne.code, statut: ligne.statut as StatutPiece });
+  }
+  const seancesTenues: Seance[] = [];
+  for (const ligne of seances) {
+    if (!STATUTS_SEANCE.has(ligne.statut as Seance["statut"])) continue;
+    seancesTenues.push({
+      id: ligne.id,
+      dossier_id: ligne.dossier_id,
+      jour: ligne.jour,
+      statut: ligne.statut as Seance["statut"],
+      remplacee_par: ligne.remplacee_par,
+    });
+  }
+  return {
+    aujourdhui,
+    reglages: {
+      nom: reglages.nom,
+      siret: reglages.siret,
+      nda: reglages.nda,
+      adresse: reglages.adresse,
+      code_postal: reglages.code_postal,
+      ville: reglages.ville,
+      email: reglages.email,
+      derogation_autorisee: reglages.derogation_autorisee === 1 ? 1 : 0,
+    },
+    dossier,
+    seances: seancesTenues,
+    retours,
+    pieces: piecesTenues,
+    exigences: exigences.filter((ligne) => ligne.statut_requis === "prete" || ligne.statut_requis === "revenue"),
+    derogations: derogations.filter((ligne) => ligne.effet === "levee" || ligne.effet === "retablie"),
+  };
+}
+
+export async function noterEnvoi(
+  db: Preparer,
+  entree: { dossierId: string; moment: string; codes: readonly string[]; recuLe: string; ip: string },
+): Promise<void> {
+  const requetes: RequeteLiee[] = [];
+  if (entree.codes.includes("convocation")) {
+    requetes.push(
+      db
+        .prepare(
+          `INSERT INTO pieces (
+             id, dossier_id, code, seance_id, libelle, indicateur, echeance,
+             echeance_verifiee_le, echeance_origine, statut, derniere_version
+           )
+           SELECT ?, ?, 'convocation', '', 'Convocation', NULL, NULL, NULL, 'registre', 'envoyee', 1
+            WHERE NOT EXISTS (
+              SELECT 1 FROM pieces WHERE dossier_id = ? AND code = 'convocation' AND seance_id = ''
+            )`,
+        )
+        .bind(crypto.randomUUID(), entree.dossierId, entree.dossierId),
+      db
+        .prepare(
+          `UPDATE pieces
+              SET statut = 'envoyee'
+            WHERE dossier_id = ? AND code = 'convocation' AND seance_id = ''
+              AND statut IN ('attente', 'prete')`,
+        )
+        .bind(entree.dossierId),
+    );
+  }
+  requetes.push(
+    db
+      .prepare(
+        `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)
+         VALUES (?, 'admin', ?, 'courrier_envoye', 'dossiers', ?, ?)`,
+      )
+      .bind(entree.recuLe, entree.ip, entree.dossierId, JSON.stringify({ moment: entree.moment, pieces: entree.codes })),
+  );
+  await db.batch(requetes);
+}
+
+export async function lireDevisEmis(
+  db: Preparer,
+  dossierId: string,
+): Promise<{ annee: number; numero: number; cree_le: string; sha256: string } | null> {
+  return une(
+    db,
+    `SELECT annee, numero, cree_le, sha256 FROM devis
+      WHERE dossier_id = ? AND statut != 'annule' AND r2_cle IS NOT NULL
+      ORDER BY annee, numero LIMIT 1`,
+    dossierId,
+  );
 }
 
 export async function lireContenuProgramme(db: Preparer, dossierId: string): Promise<string> {
@@ -455,10 +1026,16 @@ export async function enregistrerModele(
         `INSERT INTO retours (
            id, dossier_id, type, seance_id, version, recu_le, ip, user_agent,
            corps, mime, taille_octets, sha256, r2_cle
-         ) VALUES (?, ?, 'modele', ?, 1, ?, ?, ?, '{}', 'application/pdf', ?, ?, ?)`,
+         ) VALUES (
+           ?, ?, 'modele', ?,
+           (SELECT COALESCE(MAX(version), 0) + 1 FROM retours WHERE dossier_id = ? AND type = 'modele' AND seance_id = ?),
+           ?, ?, ?, '{}', 'application/pdf', ?, ?, ?
+         )`,
       )
       .bind(
         crypto.randomUUID(),
+        entree.dossierId,
+        entree.code,
         entree.dossierId,
         entree.code,
         entree.recuLe,
@@ -698,6 +1275,7 @@ export async function lirePreuves(db: Preparer): Promise<Preuves> {
     sans_mise_en_oeuvre: number;
     sans_evaluation: number;
     sans_suivi: number;
+    sans_connexion: number;
   }>(
     db,
     `SELECT
@@ -727,14 +1305,17 @@ export async function lirePreuves(db: Preparer): Promise<Preuves> {
        ) THEN 1 ELSE 0 END), 0) AS sans_evaluation,
        COALESCE(SUM(CASE WHEN d.heures_elearning > 0 AND NOT EXISTS (
          SELECT 1 FROM retours r WHERE r.dossier_id = d.id AND r.type = 'suivi_elearning'
-       ) THEN 1 ELSE 0 END), 0) AS sans_suivi
+       ) THEN 1 ELSE 0 END), 0) AS sans_suivi,
+       COALESCE(SUM(CASE WHEN d.heures_elearning > 0 AND NOT EXISTS (
+         SELECT 1 FROM retours r WHERE r.dossier_id = d.id AND r.type = 'releve_connexion'
+       ) THEN 1 ELSE 0 END), 0) AS sans_connexion
      FROM dossiers d
      WHERE d.statut != 'clos'`,
   );
   const dates = new Map<string, string>();
   for (const ligne of await plusieurs<{ code: string; pose_le: string }>(
     db,
-    "SELECT code, MAX(pose_le) AS pose_le FROM versions_organisme GROUP BY code",
+    "SELECT code, MAX(pose_le) AS pose_le FROM versions_organisme WHERE tient = 1 GROUP BY code",
   )) {
     dates.set(ligne.code, ligne.pose_le);
   }
@@ -747,6 +1328,7 @@ export async function lirePreuves(db: Preparer): Promise<Preuves> {
     sansMiseEnOeuvre: Number(compte?.sans_mise_en_oeuvre ?? 0),
     sansEvaluation: Number(compte?.sans_evaluation ?? 0),
     sansSuivi: Number(compte?.sans_suivi ?? 0),
+    sansConnexion: Number(compte?.sans_connexion ?? 0),
     dates,
   };
 }
@@ -759,6 +1341,18 @@ export type VersionOrganisme = {
   r2_cle: string;
 };
 
+export async function lireMatiere(db: Preparer): Promise<{
+  risques: { risque: string; parade: string }[];
+  reclamations: { auteur: string; objet: string; suite: string }[];
+  mesures: { constat: string; mesure: string }[];
+}> {
+  return {
+    risques: await plusieurs<{ risque: string; parade: string }>(db, "SELECT risque, parade FROM risques ORDER BY creee_le"),
+    reclamations: await plusieurs<{ auteur: string; objet: string; suite: string }>(db, "SELECT auteur, objet, suite FROM reclamations ORDER BY creee_le"),
+    mesures: await plusieurs<{ constat: string; mesure: string }>(db, "SELECT constat, mesure FROM mesures ORDER BY creee_le"),
+  };
+}
+
 export async function lireVersionsOrganisme(db: Preparer): Promise<VersionOrganisme[]> {
   return plusieurs<VersionOrganisme>(
     db,
@@ -768,19 +1362,29 @@ export async function lireVersionsOrganisme(db: Preparer): Promise<VersionOrgani
 
 export async function ajouterVersionOrganisme(
   db: Preparer,
-  entree: { id: string; code: string; poseLe: string; origine: "depot" | "produit"; sha256: string; taille: number; ip: string },
+  entree: { id: string; code: string; poseLe: string; origine: "depot" | "produit"; sha256: string; taille: number; ip: string; tient: boolean },
 ): Promise<void> {
   await db.batch([
     db
       .prepare(
-        `INSERT INTO versions_organisme (id, code, version, pose_le, origine, sha256, r2_cle, taille_octets)
+        `INSERT INTO versions_organisme (id, code, version, pose_le, origine, sha256, r2_cle, taille_octets, tient)
          VALUES (
            ?, ?,
            (SELECT COALESCE(MAX(version), 0) + 1 FROM versions_organisme WHERE code = ?),
-           ?, ?, ?, ?, ?
+           ?, ?, ?, ?, ?, ?
          )`,
       )
-      .bind(entree.id, entree.code, entree.code, entree.poseLe, entree.origine, entree.sha256, `audit/${entree.sha256}`, entree.taille),
+      .bind(
+        entree.id,
+        entree.code,
+        entree.code,
+        entree.poseLe,
+        entree.origine,
+        entree.sha256,
+        `audit/${entree.sha256}`,
+        entree.taille,
+        entree.tient ? 1 : 0,
+      ),
     db
       .prepare(
         `INSERT INTO audit (at_utc, acteur, ip, action, cible_type, cible_id, detail)

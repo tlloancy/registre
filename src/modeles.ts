@@ -1,4 +1,5 @@
 import type { DossierComplet, Organisme } from "./db.ts";
+import { documentHtml, paragraphes, sousTitre, tableauLibre } from "./html-pdf.ts";
 import { afficherJour } from "./montants.ts";
 
 export const MODELES = [
@@ -12,6 +13,12 @@ export const MODELES = [
 ] as const;
 
 export type CodeModele = (typeof MODELES)[number][0];
+
+export const CODES_PRODUITS = ["devis", "analyse", "positionnement", "convention", "programme", "reglement", "convocation", "emargement", "suivi", "qcm", "attestation", "facture"] as const;
+
+export function pieceProduite(code: string): boolean {
+  return (CODES_PRODUITS as readonly string[]).includes(code);
+}
 
 export const REGLEMENT_URL = "https://deter-mi.net/wp-content/uploads/2026/04/reglementinterieur.pdf";
 
@@ -78,24 +85,25 @@ export function textesModeles(
 }
 
 function texteAnalyse(dossier: DossierComplet, programme: string): string {
-  const objectif = premierePhrase(programme) || dossier.intitule;
-  return [
-    "Analyse du besoin",
-    "",
-    ...identite(dossier),
-    "",
-    "Objectif de la formation",
-    objectif,
-    "",
-    "Besoin du bénéficiaire",
-    "",
-    "",
-    "Situation actuelle",
-    "",
-    "",
-    "Adaptation à prévoir",
-    "",
-  ].join("\n");
+  void programme;
+  return documentHtml(
+    "Analyse du besoin et de la demande",
+    [dossier.entreprise, dossier.stagiaire_nom].filter(Boolean).join(" · "),
+    paragraphes([
+      dossier.entreprise ? `Client : ${dossier.entreprise}` : "",
+      dossier.stagiaire_nom ? `Bénéficiaire : ${dossier.stagiaire_nom}` : "",
+      dossier.intitule,
+    ]) +
+      [
+        "1. Objectif principal de la demande",
+        "2. Compétences à acquérir",
+        "3. Contraintes (temps, lieu, budget)",
+        "4. Résultats attendus",
+        "5. Besoins particuliers (handicap, prérequis)",
+      ]
+        .map((question) => sousTitre(question) + paragraphes(["Réponse"]))
+        .join(""),
+  );
 }
 
 function texteQuestions(
@@ -104,41 +112,44 @@ function texteQuestions(
   dossier: DossierComplet,
   modules: readonly ModuleProgramme[],
 ): string {
-  const lignes = [titre, "", ...identite(dossier), "", consigne];
   const objectifs = modules.flatMap((module) =>
     (module.objectifs.length > 0 ? module.objectifs : [module.titre]).map((objectif) => ({
       module: module.titre,
       objectif,
     })),
   );
-  if (objectifs.length === 0) {
-    lignes.push("", dossier.intitule, "", "Réponse", "");
-    return lignes.join("\n");
-  }
-  for (const ligne of objectifs) {
-    lignes.push("", ligne.module, ligne.objectif, "", "Réponse", "");
-  }
-  return lignes.join("\n");
+  const questions =
+    objectifs.length > 0
+      ? objectifs
+          .map((ligne, index) => sousTitre(`${index + 1}. ${ligne.module}`) + paragraphes([ligne.objectif, "Réponse"]))
+          .join("")
+      : sousTitre(`1. ${dossier.intitule}`) + paragraphes(["Réponse"]);
+  return documentHtml(titre, identite(dossier).join(" · "), paragraphes([consigne]) + questions);
 }
 
 function texteConvocation(dossier: DossierComplet, organisme: Organisme, convention: string): string {
-  const lignes = [
+  const fin = dossier.date_fin ? afficherJour(dossier.date_fin) : "";
+  return documentHtml(
     "Convocation",
-    "",
-    organisme.nom,
-    [organisme.adresse, organisme.code_postal, organisme.ville].filter(Boolean).join(" "),
-    organisme.email,
-    organisme.telephone,
-    "",
-    ...identite(dossier),
-    "",
-    `Début : ${afficherJour(dossier.date_debut)}`,
-  ];
-  if (dossier.date_fin) lignes.push(`Fin : ${afficherJour(dossier.date_fin)}`);
-  lignes.push(`${dossier.heures_total} heures`);
-  if (dossier.modalite) lignes.push(dossier.modalite);
-  if (convention) lignes.push("", `Convention ${convention}`);
-  return lignes.filter((ligne) => ligne !== "").join("\n");
+    convention ? `Convention ${convention}` : "",
+    sousTitre("Organisme") +
+      paragraphes([
+        organisme.nom,
+        [organisme.adresse, organisme.code_postal, organisme.ville].filter(Boolean).join(" "),
+        organisme.email,
+        organisme.telephone,
+      ]) +
+      sousTitre("Destinataire") +
+      paragraphes(identite(dossier)) +
+      sousTitre("Déroulement") +
+      paragraphes([
+        dossier.intitule,
+        `Début : ${afficherJour(dossier.date_debut)}`,
+        fin ? `Fin : ${fin}` : "",
+        `${dossier.heures_total} heures`,
+        dossier.modalite,
+      ]),
+  );
 }
 
 function texteEmargement(
@@ -146,35 +157,33 @@ function texteEmargement(
   organisme: Organisme,
   seances: readonly SeanceProgramme[],
 ): string {
-  const lignes = ["Feuille d'émargement", "", ...identite(dossier), "", `Formateur : ${organisme.nom}`];
   const lignesSeances = seances.length > 0 ? seances : [{ titre: "Coaching", duree: `${dossier.heures_coaching} heures`, sujet: "" }];
-  for (const seance of lignesSeances) {
-    lignes.push("", [seance.titre, seance.duree, seance.sujet].filter(Boolean).join(" — "));
-    lignes.push("Date", "", "Signature du stagiaire", "", "Signature du formateur", "");
-  }
-  return lignes.join("\n");
+  return documentHtml(
+    "Feuille d'émargement",
+    identite(dossier).join(" · "),
+    paragraphes([`Formateur : ${organisme.nom}`, dossier.intitule]) +
+      tableauLibre(
+        ["Séance", "Durée", "Date", "Stagiaire", "Formateur"],
+        lignesSeances.map((seance) => [seance.titre, seance.duree, "", "", ""]),
+      ),
+  );
 }
 
 function texteSuivi(dossier: DossierComplet, modules: readonly ModuleProgramme[]): string {
-  const lignes = ["Suivi du e-learning", "", ...identite(dossier), ""];
   const utiles = modules.filter((module) => /e-learning|h/i.test(module.heures));
   const lignesModules = utiles.length > 0 ? utiles : [{ titre: "E-learning", heures: `${dossier.heures_elearning} heures`, objectifs: [] }];
-  for (const module of lignesModules) {
-    lignes.push(module.titre, module.heures, "Heures faites", "", "Date", "");
-  }
-  return lignes.join("\n");
+  return documentHtml(
+    "Suivi du e-learning",
+    identite(dossier).join(" · "),
+    tableauLibre(
+      ["Module", "Prévu", "Fait", "Date"],
+      lignesModules.map((module) => [module.titre, module.heures, "", ""]),
+    ),
+  );
 }
 
 function identite(dossier: DossierComplet): string[] {
   return [dossier.stagiaire_nom, dossier.entreprise, dossier.intitule].filter((ligne) => ligne.trim() !== "");
-}
-
-function premierePhrase(programme: string): string {
-  const ligne = programme
-    .split(/\n/)
-    .map((valeur) => valeur.trim())
-    .find((valeur) => valeur.length > 40 && !/^programme de formation$/i.test(valeur) && !/^module\s+\d+/i.test(valeur));
-  return ligne?.replace(/\s+/g, " ") ?? "";
 }
 
 function objectifsDe(bloc: string): string[] {

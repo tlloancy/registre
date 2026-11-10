@@ -11,6 +11,7 @@ import {
   versionDuGuide,
   type Preuves,
 } from "./guide.ts";
+import { bilanDossier } from "./pages.ts";
 
 const MAINTENANT = new Date("2026-11-04T00:40:00.000Z");
 
@@ -24,6 +25,7 @@ function preuves(partiel: Partial<Preuves> = {}): Preuves {
     sansMiseEnOeuvre: 0,
     sansEvaluation: 0,
     sansSuivi: 0,
+    sansConnexion: 0,
     dates: new Map(),
     ...partiel,
   };
@@ -75,7 +77,7 @@ Glossaire
       MAINTENANT,
     );
     expect(lignes.find((ligne) => ligne.numero === 23)?.detail).toBe("Aucune veille légale.");
-    expect(lignes.find((ligne) => ligne.numero === 26)?.detail).toBe("Aucun référent ni réseau handicap.");
+    expect(lignes.find((ligne) => ligne.numero === 26)?.detail).toBe("Aucun réseau handicap n'est inscrit.");
     expect(lignes.find((ligne) => ligne.numero === 32)?.detail).toContain("Aucune auto-évaluation.");
     expect(lignes.find((ligne) => ligne.numero === 13)?.statut).toBe("hors");
     expect(lignes.find((ligne) => ligne.numero === 33)?.statut).toBe("hors");
@@ -89,7 +91,7 @@ Glossaire
       preuves(),
       MAINTENANT,
     );
-    expect(information.detail).toBe("L'accessibilité handicap n'est pas notée.");
+    expect(information.detail).toBe("L'accessibilité handicap n'est pas publiée.");
   });
 
   it("tient une veille datée de moins de 90 jours", () => {
@@ -105,6 +107,21 @@ Glossaire
       MAINTENANT,
     );
     expect(vieille.statut).toBe("pas_tenu");
+  });
+
+  it("demande le relevé de connexion à part du suivi", () => {
+    const ligne = juger(
+      { numero: 17, titre: "Le prestataire met à disposition du bénéficiaire des ressources pédagogiques." },
+      preuves({ ouverts: 1, sansProgramme: 0, sansConnexion: 1 }),
+      MAINTENANT,
+    );
+    expect(ligne.detail).toBe("Le relevé de connexion n'est pas déposé.");
+    const pieces = { tenus: ["analyse", "positionnement", "reglement", "devis", "convocation"], signes: ["convention"], programme: true };
+    expect(bilanDossier(pieces, 90)).toContain("se dépose, il ne se produit pas");
+    expect(bilanDossier({ ...pieces, tenus: [...pieces.tenus, "connexion"] }, 90)).toBe(
+      "Avant la formation : les pièces signées et envoyées sont au registre. Le relevé de connexion est au registre.",
+    );
+    expect(bilanDossier(pieces, 0)).not.toContain("relevé");
   });
 
   it("lit un guide depuis la page, sans publier l'adresse", async () => {

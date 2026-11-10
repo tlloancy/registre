@@ -2,6 +2,7 @@ import { comparerTempsConstant } from "./mot-de-passe.ts";
 
 export const NOM_SESSION = "__Host-registre";
 export const NOM_CSRF = "__Host-csrf";
+export const NOM_INFO = "__Host-info";
 
 export function nouveauJeton(): string {
   const octets = new Uint8Array(32);
