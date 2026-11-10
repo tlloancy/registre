@@ -116,7 +116,7 @@ Glossaire
       MAINTENANT,
     );
     expect(ligne.detail).toBe("Le relevé de connexion n'est pas déposé.");
-    const pieces = { tenus: ["analyse", "positionnement", "reglement", "devis", "convocation"], signes: ["convention"], programme: true };
+    const pieces = { tenus: ["analyse", "positionnement", "convocation"], signes: ["convention", "devis", "reglement"], programme: true };
     expect(bilanDossier(pieces, 90)).toContain("se dépose, il ne se produit pas");
     expect(bilanDossier({ ...pieces, tenus: [...pieces.tenus, "connexion"] }, 90)).toBe(
       "Avant la formation : les pièces signées et envoyées sont au registre. Le relevé de connexion est au registre.",

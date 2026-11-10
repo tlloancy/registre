@@ -294,12 +294,12 @@ export type PiecesVues = {
 export function bilanDossier(pieces: Pick<PiecesVues, "tenus" | "signes" | "programme">, heuresElearning: number): string {
   const tenu = (code: string) => pieces.tenus.includes(code) || pieces.signes.includes(code);
   const manques = [
-    !tenu("devis") ? "le devis signé" : "",
+    !pieces.signes.includes("devis") ? "le devis signé" : "",
     !tenu("analyse") ? "l'analyse du besoin" : "",
     !tenu("positionnement") ? "le positionnement" : "",
     !pieces.signes.includes("convention") ? "la convention signée" : "",
     !pieces.programme ? "le programme" : "",
-    !tenu("reglement") ? "le règlement signé" : "",
+    !pieces.signes.includes("reglement") ? "le règlement signé" : "",
     !tenu("convocation") ? "la convocation envoyée" : "",
   ].filter(Boolean);
   const avant = manques.length > 0
@@ -335,12 +335,12 @@ export function pageDossier(
     pieces.tenus.includes(code) || (code === "convention" && pieces.convention) || (code === "programme" && pieces.programme);
   const avant = (code: string, action: string) => echeanceAvant(action, debut, maintenant, tenu(code));
   const signe = (code: string) => pieces.signes.includes(code);
-  const devis = avant("devis", "À signer");
+  const devis = echeanceAvant("À signer", debut, maintenant, signe("devis"));
   const analyse = avant("analyse", "À renvoyer");
   const positionnement = avant("positionnement", "À renvoyer");
   const convention = avant("convention", "À signer");
   const programme = avant("programme", "À joindre à la convention");
-  const reglement = avant("reglement", "À signer");
+  const reglement = echeanceAvant("À signer", debut, maintenant, signe("reglement"));
   const convocation = avant("convocation", "À envoyer");
   return document(`
 <div class="barre">

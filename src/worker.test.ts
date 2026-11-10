@@ -434,7 +434,13 @@ Module 1 Fondamentaux`),
     const pageSignature = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
     expect(pageSignature).not.toContain(">v3<");
     expect(pageSignature).toContain(`/dossiers/${id}/analyse/signe/apercu`);
-    const signeDevis = await deposerPdf(cookies, champCsrf(stable), ecrirePdf("Devis signe."), `/dossiers/${id}/devis`, "fichier");
+    const devisNu = "Devis refait pour Atelier Nord, assez long pour rester une version tant qu'il n'est pas signé.";
+    const depotDevis = await deposerPdf(cookies, champCsrf(pageSignature), ecrirePdf(devisNu), `/dossiers/${id}/devis`, "fichier");
+    expect(depotDevis.status).toBe(303);
+    const pageDevisNu = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
+    expect(pageDevisNu).toContain('<span class="nom">Devis D2600007</span><span class="geste erreur">En retard. À signer avant le 13 mai 2026.</span>');
+    expect(pageDevisNu).toContain("le devis signé");
+    const signeDevis = await deposerPdf(cookies, champCsrf(pageDevisNu), ecrirePdf("Devis signe."), `/dossiers/${id}/devis`, "fichier");
     expect(signeDevis.status).toBe(303);
     const devisApres = dbCourante().prepare("SELECT r2_cle FROM devis").get() as { r2_cle: string };
     expect(devisApres.r2_cle).toBe(ligne.r2_cle);
