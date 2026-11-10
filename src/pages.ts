@@ -304,10 +304,10 @@ export function bilanDossier(pieces: Pick<PiecesVues, "tenus" | "signes" | "prog
   ].filter(Boolean);
   const avant = manques.length > 0
     ? `Avant la formation : il manque ${manques.join(", ")}.`
-    : "Avant la formation : les pièces signées et envoyées sont au registre.";
+    : "Avant la formation : les pièces signées et envoyées sont en règle.";
   if (heuresElearning <= 0) return avant;
   const releve = tenu("connexion")
-    ? "Le relevé de connexion est au registre."
+    ? "Le relevé de connexion est en règle."
     : "Le relevé de connexion des heures à distance se dépose, il ne se produit pas.";
   return `${avant} ${releve}`;
 }
@@ -371,12 +371,12 @@ ${classeurs([
   ["programme", lignePiece(dossier.id, "programme", "Programme", programme.texte, numeros(pieces, "programme"), csrf, programme.retard, true, signe("programme"))],
   ["reglement", lignePiece(dossier.id, "reglement", libelleModele("reglement"), reglement.texte, numeros(pieces, "reglement"), csrf, reglement.retard, true, signe("reglement"))],
   ["convocation", lignePiece(dossier.id, "convocation", libelleModele("convocation"), convocation.texte, numeros(pieces, "convocation"), csrf, convocation.retard, false, signe("convocation"))],
-  ["emargement", lignePiece(dossier.id, "emargement", libelleModele("emargement"), tenu("emargement") ? "Au registre." : echeanceDes("À signer à chaque séance de coaching.", debut, maintenant), numeros(pieces, "emargement"), csrf, false, false, signe("emargement"))],
-  ["suivi", dossier.heures_elearning > 0 ? lignePiece(dossier.id, "suivi", libelleModele("suivi"), tenu("suivi") ? "Au registre." : echeanceDes("À tenir pour les heures à distance.", debut, maintenant), numeros(pieces, "suivi"), csrf, false, false, signe("suivi")) : ""],
-  ["connexion", dossier.heures_elearning > 0 ? lignePiece(dossier.id, "connexion", "Relevé de connexion", tenu("connexion") ? "Au registre." : echeanceDes("À déposer depuis la plateforme.", debut, maintenant), numeros(pieces, "connexion"), csrf, false, false, false) : ""],
-  ["qcm", lignePiece(dossier.id, "qcm", libelleModele("qcm"), tenu("qcm") ? "Au registre." : echeanceApres("En fin de parcours.", debut, fin, maintenant), numeros(pieces, "qcm"), csrf, false, false, signe("qcm"))],
-  ["attestation", lignePiece(dossier.id, "attestation", "Attestation", tenu("attestation") ? "Au registre." : echeanceApres("Quand les retours sont là.", debut, fin, maintenant), numeros(pieces, "attestation"), csrf, false, false, signe("attestation"))],
-  ["facture", lignePiece(dossier.id, "facture", "Facture", tenu("facture") ? "Au registre." : echeanceApres("Après l'attestation.", debut, fin, maintenant), numeros(pieces, "facture"), csrf, false, false, signe("facture"))],
+  ["emargement", lignePiece(dossier.id, "emargement", libelleModele("emargement"), tenu("emargement") ? "En règle." : echeanceDes("À signer à chaque séance de coaching.", debut, maintenant), numeros(pieces, "emargement"), csrf, false, false, signe("emargement"))],
+  ["suivi", dossier.heures_elearning > 0 ? lignePiece(dossier.id, "suivi", libelleModele("suivi"), tenu("suivi") ? "En règle." : echeanceDes("À tenir pour les heures à distance.", debut, maintenant), numeros(pieces, "suivi"), csrf, false, false, signe("suivi")) : ""],
+  ["connexion", dossier.heures_elearning > 0 ? lignePiece(dossier.id, "connexion", "Relevé de connexion", tenu("connexion") ? "En règle." : echeanceDes("À déposer depuis la plateforme.", debut, maintenant), numeros(pieces, "connexion"), csrf, false, false, false) : ""],
+  ["qcm", lignePiece(dossier.id, "qcm", libelleModele("qcm"), tenu("qcm") ? "En règle." : echeanceApres("En fin de parcours.", debut, fin, maintenant), numeros(pieces, "qcm"), csrf, false, false, signe("qcm"))],
+  ["attestation", lignePiece(dossier.id, "attestation", "Attestation", tenu("attestation") ? "En règle." : echeanceApres("Quand les retours sont là.", debut, fin, maintenant), numeros(pieces, "attestation"), csrf, false, false, signe("attestation"))],
+  ["facture", lignePiece(dossier.id, "facture", "Facture", tenu("facture") ? "En règle." : echeanceApres("Après l'attestation.", debut, fin, maintenant), numeros(pieces, "facture"), csrf, false, false, signe("facture"))],
 ], "", false)}
 <details>
 <summary>Identité</summary>
@@ -623,7 +623,7 @@ function liensAnciennes(base: string, versions: readonly number[]): string {
 
 export function echeanceAvant(action: string, debut: string, maintenant: Date, fait: boolean): { texte: string; retard: boolean } {
   const jour = jourLong(debut);
-  if (fait) return { texte: "Au registre.", retard: false };
+  if (fait) return { texte: "En règle.", retard: false };
   if (jourAtteint(debut, maintenant)) return { texte: `En retard. ${action} avant le ${jour}.`, retard: true };
   return { texte: `${action} avant le ${jour}.`, retard: false };
 }

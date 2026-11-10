@@ -372,7 +372,7 @@ Module 1 Fondamentaux`),
     expect(html).toContain("En retard. À signer avant le 13 mai 2026.");
     expect(html).toContain("En retard. À envoyer avant le 13 mai 2026.");
     expect(html).toContain("Depuis le 13 mai 2026. À signer à chaque séance de coaching.");
-    expect(html).toContain("Au registre.");
+    expect(html).toContain("En règle.");
     expect(html).toContain("Avant la formation : il manque");
     expect(html).not.toContain("Relevé de connexion");
     expect(html).toContain("Ne se produit pas.");
@@ -411,7 +411,7 @@ Module 1 Fondamentaux`),
     const signe = await deposerPdf(cookies, champCsrf(html), ecrirePdf("Analyse signee."), `/dossiers/${id}/analyse`, "fichier");
     expect(signe.status).toBe(303);
     const apres = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
-    expect(apres).toContain('<span class="nom">Analyse du besoin</span><span class="geste">Au registre.</span>');
+    expect(apres).toContain('<span class="nom">Analyse du besoin</span><span class="geste">En règle.</span>');
     expect(apres).toContain(`/dossiers/${id}/analyse/signe/apercu`);
     expect(apres).not.toContain(">v2<");
     const v2 = await repondre(demande("GET", `/dossiers/${id}/analyse/2`, cookies), env());
@@ -445,7 +445,7 @@ Module 1 Fondamentaux`),
     const devisApres = dbCourante().prepare("SELECT r2_cle FROM devis").get() as { r2_cle: string };
     expect(devisApres.r2_cle).toBe(ligne.r2_cle);
     const pageDevis = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
-    expect(pageDevis).toContain('<span class="nom">Devis D2600007</span><span class="geste">Au registre.</span>');
+    expect(pageDevis).toContain('<span class="nom">Devis D2600007</span><span class="geste">En règle.</span>');
     const convoquee = await deposerPdf(cookies, champCsrf(pageDevis), ecrirePdf("Convocation envoyee."), `/dossiers/${id}/convocation`, "fichier");
     expect(convoquee.status).toBe(303);
     const pageConvocation = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
@@ -497,8 +497,8 @@ conforme au devis n° D2600007 du 01 fevrier 2026.`),
     const emises = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
     expect(emises).toContain(`/dossiers/${id}/attestation/apercu`);
     expect(emises).toContain(`/dossiers/${id}/facture/apercu`);
-    expect(emises).not.toContain('<span class="nom">Attestation</span><span class="geste">Au registre.</span>');
-    expect(emises).not.toContain('<span class="nom">Facture</span><span class="geste">Au registre.</span>');
+    expect(emises).not.toContain('<span class="nom">Attestation</span><span class="geste">En règle.</span>');
+    expect(emises).not.toContain('<span class="nom">Facture</span><span class="geste">En règle.</span>');
     const modeles = dbCourante().prepare("SELECT type, seance_id FROM retours WHERE seance_id IN ('attestation', 'facture') ORDER BY seance_id").all() as {
       type: string;
       seance_id: string;
@@ -577,7 +577,7 @@ Module 1 Fondamentaux`),
     const apresEnvoi = await pageApres(envoi, cookies);
     expect(apresEnvoi).toContain("Envoyé à camille@example.com");
     expect(apresEnvoi).toContain("Analyse du besoin");
-    expect(apresEnvoi).not.toContain('<span class="nom">Analyse du besoin</span><span class="geste">Au registre.</span>');
+    expect(apresEnvoi).not.toContain('<span class="nom">Analyse du besoin</span><span class="geste">En règle.</span>');
     const recharge = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
     expect(recharge).not.toContain("Envoyé à camille@example.com");
     expect(partis).toHaveLength(1);
