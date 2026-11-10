@@ -51,6 +51,7 @@ import {
 import { lireConvention, pdfReconnu } from "./convention.ts";
 import { analyserDossier, saisieVide, type SaisieDossier } from "./dossiers.ts";
 import { textePdf } from "./pdf.ts";
+import { estSignature } from "./signature.ts";
 import type { Fiche, Reprise } from "./pages.ts";
 import { entetes, reponse, reponseHtml, reponseOctets, redirection } from "./entetes.ts";
 import { phraseCorrespond, validerPhrase } from "./mot-de-passe.ts";
@@ -330,6 +331,8 @@ async function deposerPiece(requete: Request, env: Env, id: string, code: string
     }
     const relu = code === "convention" ? await relireConvention(octets.slice(), (await lireOrganisme(env.DB)).email, id, iso(heure(env))) : null;
     const conserve = code === "convention" ? (await lireEtatPieces(env.DB, id)).convention?.corps : undefined;
+    const texte = await texteLu(octets.slice());
+    const signature = estSignature(texte, sha256, await textesVersions(env, id, code));
     await deposerPieceDossier(env.DB, {
       dossierId: id,
       code,
@@ -338,7 +341,7 @@ async function deposerPiece(requete: Request, env: Env, id: string, code: string
       userAgent: agent(requete),
       sha256,
       taille: octets.byteLength,
-      corps: corpsSigne(relu?.corps, conserve),
+      corps: corpsDepot(relu?.corps, conserve, signature),
       dossier: relu?.dossier,
     });
     if (code === "convention" && !relu) {
@@ -465,10 +468,34 @@ async function fichierDejaLa(env: Env, id: string, code: string, sha256: string)
   return [...versions, ...signes].some((ligne) => ligne.code === code && ligne.sha256 === sha256);
 }
 
-function corpsSigne(corps?: string, conserve?: string): string {
+function corpsDepot(corps: string | undefined, conserve: string | undefined, signature: boolean): string {
   const detail = { ...objetCorps(conserve), ...objetCorps(corps) };
-  detail.role = "signe";
+  detail.role = signature ? "signe" : "version";
   return JSON.stringify(detail);
+}
+
+async function texteLu(octets: Uint8Array): Promise<string> {
+  try {
+    return await textePdf(octets);
+  } catch {
+    return "";
+  }
+}
+
+async function textesVersions(env: Env, id: string, code: string): Promise<{ texte: string; empreinte: string }[]> {
+  if (!env.FICHIERS) return [];
+  const lignes = (await lireVersionsPieces(env.DB, id)).filter((ligne) => ligne.code === code);
+  const textes: { texte: string; empreinte: string }[] = [];
+  for (const ligne of lignes) {
+    try {
+      const objet = await env.FICHIERS.get(ligne.r2_cle);
+      if (!objet) continue;
+      textes.push({ texte: await textePdf(new Uint8Array(await objet.arrayBuffer())), empreinte: ligne.sha256 });
+    } catch {
+      textes.push({ texte: "", empreinte: ligne.sha256 });
+    }
+  }
+  return textes;
 }
 
 function objetCorps(corps?: string): Record<string, unknown> {

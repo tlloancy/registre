@@ -441,12 +441,14 @@ const TYPES_SIGNES = new Set([
   "facture",
 ]);
 
-function roleSigne(corps: string): boolean {
+function roleDepot(corps: string): "signe" | "version" | "" {
   try {
-    return (JSON.parse(corps) as { role?: unknown }).role === "signe";
+    const role = (JSON.parse(corps) as { role?: unknown }).role;
+    if (role === "signe" || role === "version") return role;
   } catch {
-    return false;
+    return "";
   }
+  return "";
 }
 
 function conventionsRepetees(lignes: readonly { type: string; sha256: string }[]): Set<string> {
@@ -459,7 +461,11 @@ function conventionsRepetees(lignes: readonly { type: string; sha256: string }[]
 }
 
 function estSigne(type: string, corps: string, sha256: string, repetees: Set<string>): boolean {
-  return TYPES_SIGNES.has(type) || roleSigne(corps) || (type === "convention" && repetees.has(sha256));
+  const role = roleDepot(corps);
+  if (role === "version") return false;
+  if (role === "signe") return true;
+  if (type === "convention" && repetees.has(sha256)) return true;
+  return TYPES_SIGNES.has(type);
 }
 
 async function lireRetoursFichiers(db: Preparer, dossierId: string) {

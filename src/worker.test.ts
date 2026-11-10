@@ -423,6 +423,17 @@ Module 1 Fondamentaux`),
     expect(identique.status).toBe(303);
     const stable = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
     expect(stable).not.toContain(">v3<");
+    const autre = "Analyse du besoin distincte, avec assez de texte pour rester une version et non un scan.";
+    const version = await deposerPdf(cookies, champCsrf(stable), ecrirePdf(autre), `/dossiers/${id}/analyse`, "fichier");
+    expect(version.status).toBe(303);
+    const pageVersion = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
+    expect(pageVersion).toContain(">v2<");
+    expect(pageVersion).toContain(`/dossiers/${id}/analyse/signe/apercu`);
+    const meme = await deposerPdf(cookies, champCsrf(pageVersion), ecrirePdf(autre.replace(/ /g, "  ")), `/dossiers/${id}/analyse`, "fichier");
+    expect(meme.status).toBe(303);
+    const pageSignature = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
+    expect(pageSignature).not.toContain(">v3<");
+    expect(pageSignature).toContain(`/dossiers/${id}/analyse/signe/apercu`);
     const signeDevis = await deposerPdf(cookies, champCsrf(stable), ecrirePdf("Devis signe."), `/dossiers/${id}/devis`, "fichier");
     expect(signeDevis.status).toBe(303);
     const devisApres = dbCourante().prepare("SELECT r2_cle FROM devis").get() as { r2_cle: string };
