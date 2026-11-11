@@ -50,8 +50,8 @@ import {
 } from "./db.ts";
 import { lireConvention, pdfReconnu } from "./convention.ts";
 import { analyserDossier, saisieVide, type SaisieDossier } from "./dossiers.ts";
-import { textePdf } from "./pdf.ts";
-import { estSignature } from "./signature.ts";
+import { glyphesPdf, textePdf } from "./pdf.ts";
+import { couvreDocument, estSignature } from "./signature.ts";
 import type { Fiche, Reprise } from "./pages.ts";
 import { entetes, reponse, reponseHtml, reponseOctets, redirection } from "./entetes.ts";
 import { phraseCorrespond, validerPhrase } from "./mot-de-passe.ts";
@@ -332,7 +332,9 @@ async function deposerPiece(requete: Request, env: Env, id: string, code: string
     const relu = code === "convention" ? await relireConvention(octets.slice(), (await lireOrganisme(env.DB)).email, id, iso(heure(env))) : null;
     const conserve = code === "convention" ? (await lireEtatPieces(env.DB, id)).convention?.corps : undefined;
     const texte = await texteLu(octets.slice());
-    const signature = estSignature(texte, sha256, await textesVersions(env, id, code));
+    const signature =
+      estSignature(texte, sha256, await textesVersions(env, id, code)) ||
+      (await signatureEnPlace(env, id, code, sha256, octets.slice()));
     await deposerPieceDossier(env.DB, {
       dossierId: id,
       code,
@@ -387,6 +389,7 @@ async function htmlDossier(
 ): Promise<string | null> {
   const organisme = await lireOrganisme(env.DB);
   await produirePieces(env.DB, env.FICHIERS, id, organisme, adresseIp(requete), agent(requete), iso(heure(env)));
+  await promouvoirSignatures(env, id, adresseIp(requete), agent(requete), iso(heure(env)));
   const dossier = await lireDossier(env.DB, id);
   if (!dossier) return null;
   const etat = await lireEtatPieces(env.DB, id);
@@ -479,6 +482,76 @@ async function texteLu(octets: Uint8Array): Promise<string> {
     return await textePdf(octets);
   } catch {
     return "";
+  }
+}
+
+async function signatureEnPlace(env: Env, id: string, code: string, empreinte: string, octets: Uint8Array): Promise<boolean> {
+  if (!env.FICHIERS) return false;
+  let depot;
+  try {
+    depot = await glyphesPdf(octets);
+  } catch {
+    return false;
+  }
+  const versions = (await lireVersionsPieces(env.DB, id)).filter((ligne) => ligne.code === code && ligne.sha256 !== empreinte);
+  for (const version of versions) {
+    try {
+      const objet = await env.FICHIERS.get(version.r2_cle);
+      if (!objet) continue;
+      const origine = await glyphesPdf(new Uint8Array(await objet.arrayBuffer()));
+      if (couvreDocument(origine, depot) && !couvreDocument(depot, origine)) return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+async function promouvoirSignatures(env: Env, id: string, ip: string, userAgent: string, recuLe: string): Promise<void> {
+  if (!env.FICHIERS) return;
+  const versions = await lireVersionsPieces(env.DB, id);
+  const signes = await lireSignesPieces(env.DB, id);
+  const codes = [...new Set(versions.map((ligne) => ligne.code))];
+  for (const code of codes) {
+    if (signes.some((ligne) => ligne.code === code)) continue;
+    const fichiers = versions.filter((ligne) => ligne.code === code);
+    if (fichiers.length < 2) continue;
+    const deja = new Set(signes.filter((ligne) => ligne.code === code).map((ligne) => ligne.sha256));
+    const glyphes = new Map<string, { pages: Awaited<ReturnType<typeof glyphesPdf>>; taille: number }>();
+    for (const fichier of fichiers) {
+      if (glyphes.has(fichier.sha256)) continue;
+      try {
+        const objet = await env.FICHIERS.get(fichier.r2_cle);
+        if (!objet) continue;
+        const octets = new Uint8Array(await objet.arrayBuffer());
+        glyphes.set(fichier.sha256, { pages: await glyphesPdf(octets), taille: octets.byteLength });
+      } catch {
+        continue;
+      }
+    }
+    for (const fichier of fichiers) {
+      if (deja.has(fichier.sha256) || fichier.r2_cle !== `scans/${fichier.sha256}`) continue;
+      const depot = glyphes.get(fichier.sha256);
+      if (!depot) continue;
+      const reconnu = fichiers.some((origine) => {
+        if (origine.sha256 === fichier.sha256 || origine.version >= fichier.version) return false;
+        const source = glyphes.get(origine.sha256);
+        if (!source) return false;
+        return couvreDocument(source.pages, depot.pages) && !couvreDocument(depot.pages, source.pages);
+      });
+      if (!reconnu) continue;
+      await deposerPieceDossier(env.DB, {
+        dossierId: id,
+        code,
+        recuLe,
+        ip,
+        userAgent,
+        sha256: fichier.sha256,
+        taille: depot.taille,
+        corps: corpsDepot(undefined, undefined, true),
+      });
+      deja.add(fichier.sha256);
+    }
   }
 }
 

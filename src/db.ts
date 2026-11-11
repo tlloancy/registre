@@ -497,10 +497,16 @@ export async function lireVersionsPieces(db: Preparer, dossierId: string): Promi
   const retours = await lireRetoursFichiers(db, dossierId);
   const repetees = conventionsRepetees(retours);
   const groupes = new Map<string, { sha256: string; r2_cle: string; recu_le: string }[]>();
+  const empreintesSignees = new Set<string>();
+  for (const ligne of retours) {
+    if (!estSigne(ligne.type, ligne.corps, ligne.sha256, repetees)) continue;
+    const code = codeDepuisRetour(ligne.type, ligne.seance_id);
+    if (code) empreintesSignees.add(`${code}\n${ligne.sha256}`);
+  }
   for (const ligne of retours) {
     if (estSigne(ligne.type, ligne.corps, ligne.sha256, repetees)) continue;
     const code = codeDepuisRetour(ligne.type, ligne.seance_id);
-    if (!code) continue;
+    if (!code || empreintesSignees.has(`${code}\n${ligne.sha256}`)) continue;
     const liste = groupes.get(code) ?? [];
     liste.push({ sha256: ligne.sha256, r2_cle: ligne.r2_cle, recu_le: ligne.recu_le });
     groupes.set(code, liste);
