@@ -68,7 +68,7 @@ import {
   texteExigence,
 } from "./guide.ts";
 import { htmlVersPdf, normaliserHtml } from "./html-pdf.ts";
-import { FEUILLE, pageAccueil, pageConnexion, pageDossier, SCRIPT } from "./pages.ts";
+import { FEUILLE, lignesBilan, pageAccueil, pageConnexion, pageDossier, SCRIPT } from "./pages.ts";
 import { MODELES, pieceProduite } from "./modeles.ts";
 import { chargerDocumentOrganisme, documentOrganisme } from "./organisme.ts";
 import { numeroConvention, produireModele, produirePieces, type Stockage } from "./produire.ts";
@@ -791,7 +791,21 @@ async function pageAvecGuide(
   saisie: SaisieDossier,
   reprise: Reprise | null = null,
 ): Promise<string> {
-  return pageAccueil(fiche, dossiers, csrf, erreur, saisie, reprise, await assurerGuide(env), await lireVersionsPubliees(env.DB));
+  const recaps = [];
+  for (const dossier of dossiers) {
+    if (dossier.statut === "clos") continue;
+    const complet = await lireDossier(env.DB, dossier.id);
+    const etat = await lireEtatPieces(env.DB, dossier.id);
+    const signes = (await lireSignesPieces(env.DB, dossier.id)).map((ligne) => ligne.code);
+    recaps.push({
+      nom: dossier.stagiaire_nom,
+      lignes: lignesBilan(
+        { tenus: etat.tenus, signes, programme: etat.programme },
+        complet?.heures_elearning ?? 0,
+      ),
+    });
+  }
+  return pageAccueil(fiche, dossiers, csrf, erreur, saisie, reprise, await assurerGuide(env), await lireVersionsPubliees(env.DB), recaps);
 }
 
 async function assurerGuide(env: Env) {

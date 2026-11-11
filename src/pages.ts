@@ -179,6 +179,7 @@ export function pageAccueil(
   reprise: Reprise | null = null,
   guide: VueGuide | null = null,
   publies: readonly { code: string; version: number }[] = [],
+  recaps: readonly { nom: string; lignes: readonly LigneBilan[] }[] = [],
 ): string {
   return document(`
 <div class="barre">
@@ -199,7 +200,7 @@ ${ligne("E-mail", fiche.email)}
 ${ligne("N° TVA", fiche.numero_tva)}
 </dl>
 </section>
-${guide ? coinAudit(guide, csrf, publies) : ""}
+${guide ? coinAudit(guide, csrf, publies, recaps) : ""}
 <h2>Dossiers</h2>
 ${tableau(dossiers)}
 <h2>Ouvrir un dossier</h2>
@@ -321,8 +322,8 @@ export function lignesBilan(pieces: Pick<PiecesVues, "tenus" | "signes" | "progr
   return lignes;
 }
 
-function tableauBilan(pieces: Pick<PiecesVues, "tenus" | "signes" | "programme">, heuresElearning: number): string {
-  const corps = lignesBilan(pieces, heuresElearning)
+export function tableauBilan(lignes: readonly LigneBilan[]): string {
+  const corps = lignes
     .map((ligne) => {
       const pret = ligne.pret ? "Prêt" : "Pas prêt";
       const classe = ligne.pret ? "" : ' class="erreur"';
@@ -374,7 +375,7 @@ export function pageDossier(
 <p>${echapper(dossier.intitule)}</p>
 <p class="meta">${[dossier.entreprise, periode(dossier.date_debut, dossier.date_fin), `${dossier.heures_total} h`, afficherEuros(dossier.prix_ht_centimes) + " HT"].filter(Boolean).map((valeur) => echapper(valeur)).join(" · ")}</p>
 <h2>Pièces</h2>
-${tableauBilan(pieces, dossier.heures_elearning)}
+${tableauBilan(lignesBilan(pieces, dossier.heures_elearning))}
 ${paragrapheErreur(erreur)}
 ${info ? `<p>${echapper(info)}</p>` : ""}
 <p class="meta">${dossier.stagiaire_email.trim() ? `Envoi à ${echapper(dossier.stagiaire_email.trim())}` : "Pas d'e-mail sur le dossier."}</p>
@@ -435,7 +436,12 @@ const RANGS: { titre: string; codes: readonly string[] }[] = [
   { titre: "07 Amélioration continue", codes: ["appreciations", "auto_evaluation", "risques"] },
 ];
 
-function coinAudit(guide: VueGuide, csrf: string, publies: readonly { code: string; version: number }[]): string {
+function coinAudit(
+  guide: VueGuide,
+  csrf: string,
+  publies: readonly { code: string; version: number }[],
+  recaps: readonly { nom: string; lignes: readonly LigneBilan[] }[],
+): string {
   const ecarts = guide.lignes.filter((ligne) => ligne.statut === "pas_tenu");
   const tenus = guide.lignes.filter((ligne) => ligne.statut === "tenu").map((ligne) => String(ligne.numero));
   const hors = guide.lignes.filter((ligne) => ligne.statut === "hors").map((ligne) => String(ligne.numero));
@@ -470,7 +476,11 @@ function coinAudit(guide: VueGuide, csrf: string, publies: readonly { code: stri
     ecarts.length > 0
       ? tableauNu(ecarts.map((ligne) => blocPiece(String(ligne.numero), ligne.detail, [], false, false, ligne.titre)).join(""), false)
       : "";
+  const dossiers = recaps
+    .map((recap) => `<h3>${echapper(recap.nom)}</h3>${tableauBilan(recap.lignes)}`)
+    .join("");
   return `<h2 id="audit">Pour l'audit</h2>
+${dossiers}
 <p>${echapper(guide.verdict)}</p>
 ${entete ? `<p class="meta">${echapper(entete)}</p>` : ""}
 ${bilan ? `<p class="meta">${echapper(bilan)}.</p>` : ""}

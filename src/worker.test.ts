@@ -341,6 +341,9 @@ Module 1 Fondamentaux`),
     );
     expect(depot.status).toBe(303);
     const accueil = await (await repondre(demande("GET", "/", cookies), env())).text();
+    expect(accueil).toContain('id="audit"');
+    expect(accueil).toContain("<th>Prêt</th>");
+    expect(accueil).toContain("<td>Devis</td><td>Signé</td><td class=\"erreur\">Pas prêt</td>");
     const id = /href="\/dossiers\/([^"]+)"/.exec(accueil)?.[1] ?? "";
     const page = await repondre(demande("GET", `/dossiers/${id}`, cookies), env());
     const html = await page.text();
