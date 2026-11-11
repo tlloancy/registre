@@ -161,6 +161,14 @@ describe("accès", () => {
     expect(html).toContain("v1");
     expect(html).toContain("v2");
     expect(html).toContain("/audit/veille_legale/1");
+    expect(html).toContain("/audit/veille_legale/apercu");
+    expect(html).toContain('value="note:veille_legale"');
+    expect(html).toContain("Télécharger la sélection");
+    const paquet = await repondre(demande("POST", "/audit/paquet", cookies, { csrf, choix: "note:veille_legale" }), env());
+    expect(paquet.status).toBe(200);
+    expect(paquet.headers.get("Content-Type")).toBe("application/zip");
+    expect(paquet.headers.get("Content-Disposition")).toContain("audit.zip");
+    expect(new TextDecoder().decode(await paquet.arrayBuffer())).toContain("Veille");
     expect(html).not.toContain("Aucune veille légale.");
     expect(html).not.toContain("Aucune auto-évaluation.");
     const v1 = await repondre(demande("GET", "/audit/veille_legale/1", cookies), env());
@@ -287,7 +295,7 @@ conforme au devis n° D2600001.`),
     expect(ligne.stagiaire_email).toBe("");
     expect(ligne.financeur).toBe("");
     expect(ligne.date_fin).toBeNull();
-    const id = /href="\/dossiers\/([^"]+)"/.exec(html)?.[1] ?? "";
+    const id = /href="\/dossiers\/([0-9a-f-]{36})"/.exec(html)?.[1] ?? "";
     const page = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
     expect(page).toContain("Pas d'e-mail sur le dossier.");
     expect(page).toContain(`action="/dossiers/${id}/email"`);
@@ -345,10 +353,11 @@ Module 1 Fondamentaux`),
     const accueil = await (await repondre(demande("GET", "/", cookies), env())).text();
     expect(accueil).toContain('id="audit"');
     expect(accueil).toContain("<th>Prêt</th>");
-    expect(accueil).toContain("<td>Devis</td><td>Signé</td><td class=\"erreur\">Pas prêt</td>");
+    expect(accueil).toContain("<td>Signé</td><td class=\"erreur\">Pas prêt</td>");
+    expect(accueil).toContain("Télécharger la sélection");
     expect(accueil).toContain("Certificat Qualiopi");
     expect(accueil).toContain("<h3>Organisme</h3>");
-    const id = /href="\/dossiers\/([^"]+)"/.exec(accueil)?.[1] ?? "";
+    const id = /href="\/dossiers\/([0-9a-f-]{36})"/.exec(accueil)?.[1] ?? "";
     const page = await repondre(demande("GET", `/dossiers/${id}`, cookies), env());
     const html = await page.text();
     expect(page.status).toBe(200);
@@ -448,7 +457,8 @@ Module 1 Fondamentaux`),
     expect(depotDevis.status).toBe(303);
     const pageDevisNu = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
     expect(pageDevisNu).toContain('<span class="nom">Devis D2600007</span><span class="geste erreur">En retard. À signer avant le 13 mai 2026.</span>');
-    expect(pageDevisNu).toContain("<td>Devis</td><td>Signé</td><td class=\"erreur\">Pas prêt</td>");
+    expect(pageDevisNu).toContain("<td>Signé</td><td class=\"erreur\">Pas prêt</td>");
+    expect(pageDevisNu).toContain(`/dossiers/${id}/devis/apercu`);
     const signeDevis = await deposerPdf(cookies, champCsrf(pageDevisNu), ecrirePdf("Devis signe."), `/dossiers/${id}/devis`, "fichier");
     expect(signeDevis.status).toBe(303);
     const devisApres = dbCourante().prepare("SELECT r2_cle FROM devis").get() as { r2_cle: string };
@@ -549,7 +559,7 @@ Module 1 Fondamentaux`),
     );
     expect(creation.status).toBe(303);
     const accueil = await (await repondre(demande("GET", "/", cookies), env())).text();
-    const id = /href="\/dossiers\/([^"]+)"/.exec(accueil)?.[1] ?? "";
+    const id = /href="\/dossiers\/([0-9a-f-]{36})"/.exec(accueil)?.[1] ?? "";
     const page = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
     expect(page).toContain("Envoi à camille@example.com");
     expect(page).toContain(`action="/dossiers/${id}/courrier"`);

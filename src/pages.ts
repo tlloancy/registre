@@ -109,6 +109,8 @@ details.plie .table { border-top: 0; }
 .table { overflow-x: auto; background: #fff; border: 1px solid #d9d6d0; }
 table.bilan { margin: 0.4rem 0 1rem; }
 table.bilan td:last-child, table.bilan th:last-child { width: 6.5rem; }
+table.bilan label { display: flex; align-items: center; gap: 0.4rem; margin: 0; }
+table.bilan input { width: auto; margin: 0; padding: 0; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 0.32rem 0.5rem; border-bottom: 1px solid #e4e0d8; vertical-align: middle; }
 summary { cursor: pointer; margin-top: 1rem; }
@@ -294,30 +296,42 @@ export type PiecesVues = {
   moments: readonly MomentEnvoi[];
 };
 
-export type LigneBilan = { piece: string; faut: string; pret: boolean };
+export type LigneBilan = {
+  code: string;
+  piece: string;
+  faut: string;
+  pret: boolean;
+  apercu: string | null;
+  cle: string | null;
+};
 
 export function lignesBilan(pieces: Pick<PiecesVues, "tenus" | "signes" | "programme">, heuresElearning: number): LigneBilan[] {
   const tenu = (code: string) => pieces.tenus.includes(code) || pieces.signes.includes(code);
+  const ligne = (code: string, piece: string, faut: string, pret: boolean): LigneBilan => ({
+    code,
+    piece,
+    faut,
+    pret,
+    apercu: null,
+    cle: null,
+  });
   const lignes: LigneBilan[] = [
-    { piece: "Devis", faut: "Signé", pret: pieces.signes.includes("devis") },
-    { piece: "Analyse du besoin", faut: "Renvoyée", pret: tenu("analyse") },
-    { piece: "Positionnement", faut: "Renvoyé", pret: tenu("positionnement") },
-    { piece: "Convention", faut: "Signée", pret: pieces.signes.includes("convention") },
-    { piece: "Programme", faut: "Joint", pret: pieces.programme },
-    { piece: "Règlement", faut: "Signé", pret: pieces.signes.includes("reglement") },
-    { piece: "Convocation", faut: "Envoyée", pret: tenu("convocation") },
-    { piece: "Émargement", faut: "Signé", pret: tenu("emargement") },
+    ligne("devis", "Devis", "Signé", pieces.signes.includes("devis")),
+    ligne("analyse", "Analyse du besoin", "Renvoyée", tenu("analyse")),
+    ligne("positionnement", "Positionnement", "Renvoyé", tenu("positionnement")),
+    ligne("convention", "Convention", "Signée", pieces.signes.includes("convention")),
+    ligne("programme", "Programme", "Joint", pieces.programme),
+    ligne("reglement", "Règlement", "Signé", pieces.signes.includes("reglement")),
+    ligne("convocation", "Convocation", "Envoyée", tenu("convocation")),
+    ligne("emargement", "Émargement", "Signé", tenu("emargement")),
   ];
   if (heuresElearning > 0) {
-    lignes.push(
-      { piece: "Suivi", faut: "Tenu", pret: tenu("suivi") },
-      { piece: "Relevé de connexion", faut: "Déposé", pret: tenu("connexion") },
-    );
+    lignes.push(ligne("suivi", "Suivi", "Tenu", tenu("suivi")), ligne("connexion", "Relevé de connexion", "Déposé", tenu("connexion")));
   }
   lignes.push(
-    { piece: "Évaluation de sortie", faut: "Déposée", pret: tenu("qcm") },
-    { piece: "Attestation", faut: "Délivrée", pret: tenu("attestation") },
-    { piece: "Facture", faut: "Déposée", pret: tenu("facture") },
+    ligne("qcm", "Évaluation de sortie", "Déposée", tenu("qcm")),
+    ligne("attestation", "Attestation", "Délivrée", tenu("attestation")),
+    ligne("facture", "Facture", "Déposée", tenu("facture")),
   );
   return lignes;
 }
@@ -325,17 +339,41 @@ export function lignesBilan(pieces: Pick<PiecesVues, "tenus" | "signes" | "progr
 export function lignesOrganisme(guide: VueGuide, publies: readonly { code: string }[]): LigneBilan[] {
   const presents = new Set(publies.map((piece) => piece.code));
   return [
-    ...DOCUMENTS_ORGANISME.map((document) => ({
-      piece: document.libelle,
-      faut: "Présenté",
-      pret: presents.has(document.code),
-    })),
+    ...DOCUMENTS_ORGANISME.map((document) => {
+      const pret = presents.has(document.code);
+      return {
+        code: document.code,
+        piece: document.libelle,
+        faut: "Présenté",
+        pret,
+        apercu: pret ? `/organisme/${document.code}/apercu` : null,
+        cle: pret ? `org:${document.code}` : null,
+      };
+    }),
     ...guide.pieces.map((piece) => ({
+      code: piece.code,
       piece: piece.libelle,
       faut: piece.periode,
       pret: piece.courante !== null && piece.fraiche,
+      apercu: piece.courante ? `/audit/${piece.code}/apercu` : null,
+      cle: piece.courante ? `note:${piece.code}` : null,
     })),
   ];
+}
+
+export function lierDossier(
+  id: string,
+  lignes: readonly LigneBilan[],
+  signes: readonly string[],
+  versions: readonly { code: string; version: number }[],
+): LigneBilan[] {
+  return lignes.map((ligne) => {
+    const signe = signes.includes(ligne.code);
+    const nombre = versions.some((version) => version.code === ligne.code);
+    if (!signe && !nombre) return ligne;
+    const base = `/dossiers/${id}/${ligne.code}${signe ? "/signe" : ""}`;
+    return { ...ligne, apercu: `${base}/apercu`, cle: `dos:${id}:${ligne.code}${signe ? ":signe" : ""}` };
+  });
 }
 
 export function tableauBilan(lignes: readonly LigneBilan[]): string {
@@ -343,10 +381,22 @@ export function tableauBilan(lignes: readonly LigneBilan[]): string {
     .map((ligne) => {
       const pret = ligne.pret ? "Prêt" : "Pas prêt";
       const classe = ligne.pret ? "" : ' class="erreur"';
-      return `<tr><td>${echapper(ligne.piece)}</td><td>${echapper(ligne.faut)}</td><td${classe}>${pret}</td></tr>`;
+      const nom = ligne.apercu
+        ? `<a href="${echapper(ligne.apercu)}" target="_blank" rel="noopener">${echapper(ligne.piece)}</a>`
+        : echapper(ligne.piece);
+      const caseACocher = ligne.cle
+        ? `<input type="checkbox" name="choix" value="${echapper(ligne.cle)}"${ligne.pret ? " checked" : ""}>`
+        : "";
+      const cellule = caseACocher ? `<label>${caseACocher}${nom}</label>` : nom;
+      return `<tr><td>${cellule}</td><td>${echapper(ligne.faut)}</td><td${classe}>${pret}</td></tr>`;
     })
     .join("");
   return `<div class="table"><table class="bilan"><thead><tr><th>Pièce</th><th>Il faut</th><th>Prêt</th></tr></thead><tbody>${corps}</tbody></table></div>`;
+}
+
+export function formulairePaquet(csrf: string, corps: string, actif: boolean): string {
+  if (!actif) return corps;
+  return `<form method="post" action="/audit/paquet"><input type="hidden" name="csrf" value="${echapper(csrf)}">${corps}<button type="submit">Télécharger la sélection</button></form>`;
 }
 
 export function pageDossier(
@@ -391,7 +441,10 @@ export function pageDossier(
 <p>${echapper(dossier.intitule)}</p>
 <p class="meta">${[dossier.entreprise, periode(dossier.date_debut, dossier.date_fin), `${dossier.heures_total} h`, afficherEuros(dossier.prix_ht_centimes) + " HT"].filter(Boolean).map((valeur) => echapper(valeur)).join(" · ")}</p>
 <h2>Pièces</h2>
-${tableauBilan(lignesBilan(pieces, dossier.heures_elearning))}
+${(() => {
+    const lignes = lierDossier(dossier.id, lignesBilan(pieces, dossier.heures_elearning), pieces.signes, pieces.versions);
+    return formulairePaquet(csrf, tableauBilan(lignes), lignes.some((ligne) => ligne.cle));
+  })()}
 ${paragrapheErreur(erreur)}
 ${info ? `<p>${echapper(info)}</p>` : ""}
 <p class="meta">${dossier.stagiaire_email.trim() ? `Envoi à ${echapper(dossier.stagiaire_email.trim())}` : "Pas d'e-mail sur le dossier."}</p>
@@ -492,13 +545,14 @@ function coinAudit(
     ecarts.length > 0
       ? tableauNu(ecarts.map((ligne) => blocPiece(String(ligne.numero), ligne.detail, [], false, false, ligne.titre)).join(""), false)
       : "";
-  const fixe = `<h3>Organisme</h3>${tableauBilan(lignesOrganisme(guide, publies))}`;
+  const organisme = lignesOrganisme(guide, publies);
+  const fixe = `<h3>Organisme</h3>${tableauBilan(organisme)}`;
   const dossiers = recaps
     .map((recap) => `<h3>${echapper(recap.nom)}</h3>${tableauBilan(recap.lignes)}`)
     .join("");
+  const actif = organisme.some((ligne) => ligne.cle) || recaps.some((recap) => recap.lignes.some((ligne) => ligne.cle));
   return `<h2 id="audit">Pour l'audit</h2>
-${fixe}
-${dossiers}
+${formulairePaquet(csrf, `${fixe}${dossiers}`, actif)}
 <p>${echapper(guide.verdict)}</p>
 ${entete ? `<p class="meta">${echapper(entete)}</p>` : ""}
 ${bilan ? `<p class="meta">${echapper(bilan)}.</p>` : ""}

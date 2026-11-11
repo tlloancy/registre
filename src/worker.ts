@@ -68,7 +68,8 @@ import {
   texteExigence,
 } from "./guide.ts";
 import { htmlVersPdf, normaliserHtml } from "./html-pdf.ts";
-import { FEUILLE, lignesBilan, pageAccueil, pageConnexion, pageDossier, SCRIPT } from "./pages.ts";
+import { FEUILLE, lierDossier, lignesBilan, pageAccueil, pageConnexion, pageDossier, SCRIPT } from "./pages.ts";
+import { archiveZip } from "./zip.ts";
 import { MODELES, pieceProduite } from "./modeles.ts";
 import { chargerDocumentOrganisme, documentOrganisme } from "./organisme.ts";
 import { numeroConvention, produireModele, produirePieces, type Stockage } from "./produire.ts";
@@ -124,6 +125,7 @@ export async function repondre(requete: Request, env: Env): Promise<Response> {
 
 async function aiguiller(requete: Request, url: URL, env: Env): Promise<Response> {
   if (requete.method === "POST" && url.pathname === "/guide/lu") return noterGuide(requete, env);
+  if (requete.method === "POST" && url.pathname === "/audit/paquet") return paquetAudit(requete, env);
   if (requete.method === "POST" && url.pathname === "/audit/produire") return produireAudit(requete, env, null);
   if (requete.method === "POST") {
     const produit = /^\/audit\/([a-z_]+)\/produire$/.exec(url.pathname);
@@ -797,11 +799,14 @@ async function pageAvecGuide(
     const complet = await lireDossier(env.DB, dossier.id);
     const etat = await lireEtatPieces(env.DB, dossier.id);
     const signes = (await lireSignesPieces(env.DB, dossier.id)).map((ligne) => ligne.code);
+    const versions = await lireVersionsPieces(env.DB, dossier.id);
     recaps.push({
       nom: dossier.stagiaire_nom,
-      lignes: lignesBilan(
-        { tenus: etat.tenus, signes, programme: etat.programme },
-        complet?.heures_elearning ?? 0,
+      lignes: lierDossier(
+        dossier.id,
+        lignesBilan({ tenus: etat.tenus, signes, programme: etat.programme }, complet?.heures_elearning ?? 0),
+        signes,
+        versions,
       ),
     });
   }
@@ -985,6 +990,70 @@ async function poserVersion(
     return reponseHtml(400, await pageAvecGuide(env, fiche, dossiers, csrf, "La version n'a pas été enregistrée.", saisieVide()));
   }
   return null;
+}
+
+async function paquetAudit(requete: Request, env: Env): Promise<Response> {
+  const secret = await exigerSecret(env);
+  const session = await sessionOuverte(requete, env);
+  if (!session) return formulaireConnexion(secret, null, 401, true);
+  const formulaire = await lireFormulaire(requete);
+  if (!formulaire || !memesJetons(session.csrf, brut(formulaire.get("csrf")))) return reponse(403, "La page a expiré. Recharge-la.\n");
+  const choix = formulaire.getAll("choix").map((valeur) => brut(valeur)).filter(Boolean).slice(0, 40);
+  const fichiers: { nom: string; octets: Uint8Array }[] = [];
+  let total = 0;
+  const noms = new Set<string>();
+  for (const valeur of choix) {
+    const fichier = await fichierPaquet(env, valeur);
+    if (!fichier) continue;
+    if (total + fichier.octets.byteLength > 40_000_000) return reponse(413, "Le paquet est trop lourd.\n");
+    total += fichier.octets.byteLength;
+    let nom = fichier.nom;
+    let rang = 2;
+    while (noms.has(nom)) {
+      nom = fichier.nom.replace(/(\.[^.]+)?$/, `-${rang}$1`);
+      rang += 1;
+    }
+    noms.add(nom);
+    fichiers.push({ nom, octets: fichier.octets });
+  }
+  if (fichiers.length === 0) return reponse(400, "Rien à télécharger.\n");
+  return reponseOctets(archiveZip(fichiers), "application/zip", "audit.zip");
+}
+
+async function fichierPaquet(env: Env, choix: string): Promise<{ nom: string; octets: Uint8Array } | null> {
+  if (!env.FICHIERS) return null;
+  const organisme = /^org:([a-z]+)$/.exec(choix);
+  if (organisme?.[1] && documentOrganisme(organisme[1])) {
+    const versions = (await lireVersionsPubliees(env.DB)).filter((ligne) => ligne.code === organisme[1]);
+    const cible = versions.at(-1);
+    if (!cible) return null;
+    return lirePaquet(env, cible.r2_cle, `${documentOrganisme(organisme[1])?.libelle ?? organisme[1]}.pdf`);
+  }
+  const note = /^note:([a-z_]+)$/.exec(choix);
+  if (note?.[1] && noteParCode(note[1])) {
+    const versions = (await lireVersionsOrganisme(env.DB)).filter((ligne) => ligne.code === note[1]);
+    const cible = versions.at(-1);
+    if (!cible) return null;
+    return lirePaquet(env, cible.r2_cle, `${noteParCode(note[1])?.libelle ?? note[1]}.pdf`);
+  }
+  const dossier = /^dos:([0-9a-f-]{36}):([a-z]+)(?::(signe))?$/.exec(choix);
+  if (!dossier?.[1] || !dossier[2]) return null;
+  const cible = dossier[3] ? await cleSigne(env, dossier[1], dossier[2]) : await cleTelechargement(env, dossier[1], dossier[2], null);
+  if (!cible) return null;
+  const fiche = await lireDossier(env.DB, dossier[1]);
+  const prefixe = fiche?.stagiaire_nom ? `${fiche.stagiaire_nom} - ` : "";
+  return lirePaquet(env, cible.cle, `${prefixe}${cible.nom}`);
+}
+
+async function lirePaquet(env: Env, cle: string, nom: string): Promise<{ nom: string; octets: Uint8Array } | null> {
+  if (!env.FICHIERS) return null;
+  try {
+    const objet = await env.FICHIERS.get(cle);
+    if (!objet) return null;
+    return { nom: nom.replace(/[\\/:*?"<>|]/g, "-").slice(0, 140), octets: new Uint8Array(await objet.arrayBuffer()) };
+  } catch {
+    return null;
+  }
 }
 
 async function servirAudit(
