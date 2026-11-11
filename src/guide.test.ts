@@ -11,7 +11,7 @@ import {
   versionDuGuide,
   type Preuves,
 } from "./guide.ts";
-import { bilanDossier } from "./pages.ts";
+import { lignesBilan } from "./pages.ts";
 
 const MAINTENANT = new Date("2026-11-04T00:40:00.000Z");
 
@@ -117,11 +117,12 @@ Glossaire
     );
     expect(ligne.detail).toBe("Le relevé de connexion n'est pas déposé.");
     const pieces = { tenus: ["analyse", "positionnement", "convocation"], signes: ["convention", "devis", "reglement"], programme: true };
-    expect(bilanDossier(pieces, 90)).toContain("se dépose, il ne se produit pas");
-    expect(bilanDossier({ ...pieces, tenus: [...pieces.tenus, "connexion"] }, 90)).toBe(
-      "Avant la formation : les pièces signées et envoyées sont en règle. Le relevé de connexion est en règle.",
-    );
-    expect(bilanDossier(pieces, 0)).not.toContain("relevé");
+    const lignes = lignesBilan(pieces, 90);
+    expect(lignes.find((ligne) => ligne.piece === "Relevé de connexion")?.pret).toBe(false);
+    expect(lignes.find((ligne) => ligne.piece === "Devis")?.pret).toBe(true);
+    const depose = lignesBilan({ ...pieces, tenus: [...pieces.tenus, "connexion"] }, 90);
+    expect(depose.find((ligne) => ligne.piece === "Relevé de connexion")?.pret).toBe(true);
+    expect(lignesBilan(pieces, 0).some((ligne) => ligne.piece === "Relevé de connexion")).toBe(false);
   });
 
   it("lit un guide depuis la page, sans publier l'adresse", async () => {

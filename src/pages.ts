@@ -107,6 +107,8 @@ details.plie { margin: 0.55rem 0; }
 details.plie > summary { margin: 0; padding: 0.42rem 0.65rem; background: #efece6; border: 1px solid #d9d6d0; font-weight: 650; }
 details.plie .table { border-top: 0; }
 .table { overflow-x: auto; background: #fff; border: 1px solid #d9d6d0; }
+table.bilan { margin: 0.4rem 0 1rem; }
+table.bilan td:last-child, table.bilan th:last-child { width: 6.5rem; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 0.32rem 0.5rem; border-bottom: 1px solid #e4e0d8; vertical-align: middle; }
 summary { cursor: pointer; margin-top: 1rem; }
@@ -291,25 +293,43 @@ export type PiecesVues = {
   moments: readonly MomentEnvoi[];
 };
 
-export function bilanDossier(pieces: Pick<PiecesVues, "tenus" | "signes" | "programme">, heuresElearning: number): string {
+export type LigneBilan = { piece: string; faut: string; pret: boolean };
+
+export function lignesBilan(pieces: Pick<PiecesVues, "tenus" | "signes" | "programme">, heuresElearning: number): LigneBilan[] {
   const tenu = (code: string) => pieces.tenus.includes(code) || pieces.signes.includes(code);
-  const manques = [
-    !pieces.signes.includes("devis") ? "le devis signé" : "",
-    !tenu("analyse") ? "l'analyse du besoin" : "",
-    !tenu("positionnement") ? "le positionnement" : "",
-    !pieces.signes.includes("convention") ? "la convention signée" : "",
-    !pieces.programme ? "le programme" : "",
-    !pieces.signes.includes("reglement") ? "le règlement signé" : "",
-    !tenu("convocation") ? "la convocation envoyée" : "",
-  ].filter(Boolean);
-  const avant = manques.length > 0
-    ? `Avant la formation : il manque ${manques.join(", ")}.`
-    : "Avant la formation : les pièces signées et envoyées sont en règle.";
-  if (heuresElearning <= 0) return avant;
-  const releve = tenu("connexion")
-    ? "Le relevé de connexion est en règle."
-    : "Le relevé de connexion des heures à distance se dépose, il ne se produit pas.";
-  return `${avant} ${releve}`;
+  const lignes: LigneBilan[] = [
+    { piece: "Devis", faut: "Signé", pret: pieces.signes.includes("devis") },
+    { piece: "Analyse du besoin", faut: "Renvoyée", pret: tenu("analyse") },
+    { piece: "Positionnement", faut: "Renvoyé", pret: tenu("positionnement") },
+    { piece: "Convention", faut: "Signée", pret: pieces.signes.includes("convention") },
+    { piece: "Programme", faut: "Joint", pret: pieces.programme },
+    { piece: "Règlement", faut: "Signé", pret: pieces.signes.includes("reglement") },
+    { piece: "Convocation", faut: "Envoyée", pret: tenu("convocation") },
+    { piece: "Émargement", faut: "Signé", pret: tenu("emargement") },
+  ];
+  if (heuresElearning > 0) {
+    lignes.push(
+      { piece: "Suivi", faut: "Tenu", pret: tenu("suivi") },
+      { piece: "Relevé de connexion", faut: "Déposé", pret: tenu("connexion") },
+    );
+  }
+  lignes.push(
+    { piece: "Évaluation de sortie", faut: "Déposée", pret: tenu("qcm") },
+    { piece: "Attestation", faut: "Délivrée", pret: tenu("attestation") },
+    { piece: "Facture", faut: "Déposée", pret: tenu("facture") },
+  );
+  return lignes;
+}
+
+function tableauBilan(pieces: Pick<PiecesVues, "tenus" | "signes" | "programme">, heuresElearning: number): string {
+  const corps = lignesBilan(pieces, heuresElearning)
+    .map((ligne) => {
+      const pret = ligne.pret ? "Prêt" : "Pas prêt";
+      const classe = ligne.pret ? "" : ' class="erreur"';
+      return `<tr><td>${echapper(ligne.piece)}</td><td>${echapper(ligne.faut)}</td><td${classe}>${pret}</td></tr>`;
+    })
+    .join("");
+  return `<div class="table"><table class="bilan"><thead><tr><th>Pièce</th><th>Il faut</th><th>Prêt</th></tr></thead><tbody>${corps}</tbody></table></div>`;
 }
 
 export function pageDossier(
@@ -354,7 +374,7 @@ export function pageDossier(
 <p>${echapper(dossier.intitule)}</p>
 <p class="meta">${[dossier.entreprise, periode(dossier.date_debut, dossier.date_fin), `${dossier.heures_total} h`, afficherEuros(dossier.prix_ht_centimes) + " HT"].filter(Boolean).map((valeur) => echapper(valeur)).join(" · ")}</p>
 <h2>Pièces</h2>
-<p>${echapper(bilanDossier(pieces, dossier.heures_elearning))}</p>
+${tableauBilan(pieces, dossier.heures_elearning)}
 ${paragrapheErreur(erreur)}
 ${info ? `<p>${echapper(info)}</p>` : ""}
 <p class="meta">${dossier.stagiaire_email.trim() ? `Envoi à ${echapper(dossier.stagiaire_email.trim())}` : "Pas d'e-mail sur le dossier."}</p>

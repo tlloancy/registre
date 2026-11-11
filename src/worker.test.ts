@@ -373,7 +373,8 @@ Module 1 Fondamentaux`),
     expect(html).toContain("En retard. À envoyer avant le 13 mai 2026.");
     expect(html).toContain("Depuis le 13 mai 2026. À signer à chaque séance de coaching.");
     expect(html).toContain("En règle.");
-    expect(html).toContain("Avant la formation : il manque");
+    expect(html).toContain("<th>Prêt</th>");
+    expect(html).toContain("Pas prêt");
     expect(html).not.toContain("Relevé de connexion");
     expect(html).toContain("Ne se produit pas.");
     expect(html.match(/Ne se produit pas\./g)?.length).toBe(3);
@@ -439,7 +440,7 @@ Module 1 Fondamentaux`),
     expect(depotDevis.status).toBe(303);
     const pageDevisNu = await (await repondre(demande("GET", `/dossiers/${id}`, cookies), env())).text();
     expect(pageDevisNu).toContain('<span class="nom">Devis D2600007</span><span class="geste erreur">En retard. À signer avant le 13 mai 2026.</span>');
-    expect(pageDevisNu).toContain("le devis signé");
+    expect(pageDevisNu).toContain("<td>Devis</td><td>Signé</td><td class=\"erreur\">Pas prêt</td>");
     const signeDevis = await deposerPdf(cookies, champCsrf(pageDevisNu), ecrirePdf("Devis signe."), `/dossiers/${id}/devis`, "fichier");
     expect(signeDevis.status).toBe(303);
     const devisApres = dbCourante().prepare("SELECT r2_cle FROM devis").get() as { r2_cle: string };
