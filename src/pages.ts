@@ -322,6 +322,22 @@ export function lignesBilan(pieces: Pick<PiecesVues, "tenus" | "signes" | "progr
   return lignes;
 }
 
+export function lignesOrganisme(guide: VueGuide, publies: readonly { code: string }[]): LigneBilan[] {
+  const presents = new Set(publies.map((piece) => piece.code));
+  return [
+    ...DOCUMENTS_ORGANISME.map((document) => ({
+      piece: document.libelle,
+      faut: "Présenté",
+      pret: presents.has(document.code),
+    })),
+    ...guide.pieces.map((piece) => ({
+      piece: piece.libelle,
+      faut: piece.periode,
+      pret: piece.courante !== null && piece.fraiche,
+    })),
+  ];
+}
+
 export function tableauBilan(lignes: readonly LigneBilan[]): string {
   const corps = lignes
     .map((ligne) => {
@@ -476,10 +492,12 @@ function coinAudit(
     ecarts.length > 0
       ? tableauNu(ecarts.map((ligne) => blocPiece(String(ligne.numero), ligne.detail, [], false, false, ligne.titre)).join(""), false)
       : "";
+  const fixe = `<h3>Organisme</h3>${tableauBilan(lignesOrganisme(guide, publies))}`;
   const dossiers = recaps
     .map((recap) => `<h3>${echapper(recap.nom)}</h3>${tableauBilan(recap.lignes)}`)
     .join("");
   return `<h2 id="audit">Pour l'audit</h2>
+${fixe}
 ${dossiers}
 <p>${echapper(guide.verdict)}</p>
 ${entete ? `<p class="meta">${echapper(entete)}</p>` : ""}

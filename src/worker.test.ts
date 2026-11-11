@@ -120,6 +120,8 @@ describe("accès", () => {
     expect(html).toContain('type="file"');
     expect(html).toContain("Ouvrir le dossier");
     expect(html).toContain("Pour l'audit");
+    expect(html).toContain("Certificat Qualiopi");
+    expect(html).toContain("Veille légale et réglementaire");
     expect(html).toContain("Pas conforme");
     expect(html).toContain("Veille légale");
     expect(html).toContain("Référent handicap");
@@ -344,6 +346,8 @@ Module 1 Fondamentaux`),
     expect(accueil).toContain('id="audit"');
     expect(accueil).toContain("<th>Prêt</th>");
     expect(accueil).toContain("<td>Devis</td><td>Signé</td><td class=\"erreur\">Pas prêt</td>");
+    expect(accueil).toContain("Certificat Qualiopi");
+    expect(accueil).toContain("<h3>Organisme</h3>");
     const id = /href="\/dossiers\/([^"]+)"/.exec(accueil)?.[1] ?? "";
     const page = await repondre(demande("GET", `/dossiers/${id}`, cookies), env());
     const html = await page.text();
@@ -378,6 +382,7 @@ Module 1 Fondamentaux`),
     expect(html).toContain("En règle.");
     expect(html).toContain("<th>Prêt</th>");
     expect(html).toContain("Pas prêt");
+    expect(html).not.toContain("Certificat Qualiopi");
     expect(html).not.toContain("Relevé de connexion");
     expect(html).toContain("Ne se produit pas.");
     expect(html.match(/Ne se produit pas\./g)?.length).toBe(3);
